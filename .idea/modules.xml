@@ -2,7 +2,7 @@
 <project version="4">
   <component name="ProjectModuleManager">
     <modules>
-      <module fileurl="file://$PROJECT_DIR$/.idea/TamOCR.iml" filepath="$PROJECT_DIR$/.idea/TamOCR.iml" />
+      <module fileurl="file://$PROJECT_DIR$/.idea/Tamil-OCR.iml" filepath="$PROJECT_DIR$/.idea/Tamil-OCR.iml" />
     </modules>
   </component>
 </project>
