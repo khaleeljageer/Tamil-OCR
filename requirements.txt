@@ -1,0 +1,6 @@
+PyQt6
+pytesseract
+pdf2image
+Pillow
+PyMuPDF
+fitz
