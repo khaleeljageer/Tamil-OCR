@@ -5,7 +5,7 @@ import tempfile
 import pytesseract
 from PIL import Image
 from PyQt6.QtCore import Qt, QRectF, QThread, pyqtSignal, QTimer, QThreadPool, QRunnable
-from PyQt6.QtGui import QPixmap, QPen, QColor, QBrush, QPainter
+from PyQt6.QtGui import QPixmap, QPen, QColor, QBrush, QPainter, QIcon
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout,
     QLabel, QPushButton, QFileDialog, QTextEdit, QHBoxLayout, QSplitter,
@@ -196,6 +196,81 @@ class ZoomableGraphicsView(QGraphicsView):
             super().wheelEvent(event)
 
 
+class ImageViewerWidget(QWidget):
+    """Custom widget containing the graphics view with floating zoom controls"""
+
+    def __init__(self, scene):
+        super().__init__()
+        self.graphics_view = ZoomableGraphicsView(scene)
+        self.setup_ui()
+
+    def setup_ui(self):
+        # Main layout for the image viewer
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self.graphics_view)
+
+        # Create floating zoom controls
+        self.zoom_controls = QFrame(self)
+        self.zoom_controls.setFixedSize(120, 40)
+        self.zoom_controls.setStyleSheet("""
+            QFrame {
+                background-color: rgba(50, 50, 50, 200);
+                border: 1px solid rgba(100, 100, 100, 150);
+                border-radius: 5px;
+            }
+            QPushButton {
+                background-color: rgba(70, 70, 70, 200);
+                border: 1px solid rgba(120, 120, 120, 150);
+                border-radius: 3px;
+                color: white;
+                font-weight: bold;
+                padding: 2px;
+            }
+            QPushButton:hover {
+                background-color: rgba(90, 90, 90, 220);
+                border: 1px solid rgba(140, 140, 140, 180);
+            }
+            QPushButton:pressed {
+                background-color: rgba(110, 110, 110, 240);
+            }
+        """)
+
+        # Layout for zoom controls
+        zoom_layout = QHBoxLayout(self.zoom_controls)
+        zoom_layout.setContentsMargins(5, 5, 5, 5)
+        zoom_layout.setSpacing(2)
+
+        # Create zoom buttons with icons/symbols
+        self.zoom_in_btn = QPushButton("+")
+        self.zoom_in_btn.setFixedSize(30, 30)
+        self.zoom_in_btn.setToolTip("Zoom In (Ctrl+Mouse Wheel)")
+
+        self.zoom_out_btn = QPushButton("−")
+        self.zoom_out_btn.setFixedSize(30, 30)
+        self.zoom_out_btn.setToolTip("Zoom Out (Ctrl+Mouse Wheel)")
+
+        self.fit_btn = QPushButton("⊡")
+        self.fit_btn.setFixedSize(30, 30)
+        self.fit_btn.setToolTip("Fit to Screen")
+
+        zoom_layout.addWidget(self.zoom_in_btn)
+        zoom_layout.addWidget(self.zoom_out_btn)
+        zoom_layout.addWidget(self.fit_btn)
+
+        # Position zoom controls in top-right corner
+        self.position_zoom_controls()
+
+    def position_zoom_controls(self):
+        """Position zoom controls in the top-right corner"""
+        self.zoom_controls.move(self.width() - 130, 10)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        # Reposition zoom controls when widget is resized
+        self.position_zoom_controls()
+
+
 class OCRApp(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -210,6 +285,9 @@ class OCRApp(QMainWindow):
         self.highlights_visible = True
         self.ocr_data_cache = {}  # Cache OCR data for each page
         self.text_cache = {}  # Cache text for each page
+
+        # Store confidence threshold value directly to prevent widget issues
+        self.confidence_threshold = 40  # Default value
 
         # Workers
         self.pdf_worker = None
@@ -241,7 +319,6 @@ class OCRApp(QMainWindow):
         self.status_bar.addPermanentWidget(self.page_info_label)
 
         self.scale_factor = 1.0
-        self.confidence_threshold = 40
 
     def setup_ui(self):
         # Central widget
@@ -271,14 +348,6 @@ class OCRApp(QMainWindow):
         self.reprocess_btn.setToolTip("Reprocess OCR with current confidence threshold")
         self.reprocess_btn.setEnabled(False)
 
-        # View controls
-        self.zoom_in_btn = QPushButton("Zoom In")
-        self.zoom_in_btn.setMinimumWidth(80)
-        self.zoom_out_btn = QPushButton("Zoom Out")
-        self.zoom_out_btn.setMinimumWidth(80)
-        self.fit_btn = QPushButton("Fit to Screen")
-        self.fit_btn.setMinimumWidth(100)
-
         # Checkbox
         self.toggle_highlights = QCheckBox("Show Highlights")
         self.toggle_highlights.setChecked(True)
@@ -288,10 +357,13 @@ class OCRApp(QMainWindow):
         conf_label = QLabel("Confidence Threshold:")
         self.confidence_spinbox = QSpinBox()
         self.confidence_spinbox.setRange(0, 100)
-        self.confidence_spinbox.setValue(40)
+        self.confidence_spinbox.setValue(self.confidence_threshold)
         self.confidence_spinbox.setSuffix("%")
         self.confidence_spinbox.setMinimumWidth(80)
         self.confidence_spinbox.setToolTip("Minimum confidence level for OCR text recognition (0-100%)")
+
+        # Connect confidence change signal for real-time updates
+        self.confidence_spinbox.valueChanged.connect(self.on_confidence_changed)
 
         # Navigation
         self.prev_btn = QPushButton("← Prev Page")
@@ -312,9 +384,7 @@ class OCRApp(QMainWindow):
         separator1.setFrameShadow(QFrame.Shadow.Sunken)
         controls_layout.addWidget(separator1)
 
-        controls_layout.addWidget(self.zoom_in_btn)
-        controls_layout.addWidget(self.zoom_out_btn)
-        controls_layout.addWidget(self.fit_btn)
+        controls_layout.addWidget(self.toggle_highlights)
 
         # Separator
         separator2 = QFrame()
@@ -322,25 +392,16 @@ class OCRApp(QMainWindow):
         separator2.setFrameShadow(QFrame.Shadow.Sunken)
         controls_layout.addWidget(separator2)
 
-
-        controls_layout.addWidget(self.toggle_highlights)
-
-        # Separator
-        separator3 = QFrame()
-        separator3.setFrameShape(QFrame.Shape.VLine)
-        separator3.setFrameShadow(QFrame.Shadow.Sunken)
-        controls_layout.addWidget(separator3)
-
         controls_layout.addWidget(conf_label)
         controls_layout.addWidget(self.confidence_spinbox)
 
         controls_layout.addStretch()  # Push navigation to the right
 
         # Separator
-        separator4 = QFrame()
-        separator4.setFrameShape(QFrame.Shape.VLine)
-        separator4.setFrameShadow(QFrame.Shadow.Sunken)
-        controls_layout.addWidget(separator4)
+        separator3 = QFrame()
+        separator3.setFrameShape(QFrame.Shape.VLine)
+        separator3.setFrameShadow(QFrame.Shadow.Sunken)
+        controls_layout.addWidget(separator3)
 
         controls_layout.addWidget(self.prev_btn)
         controls_layout.addWidget(self.next_btn)
@@ -349,11 +410,12 @@ class OCRApp(QMainWindow):
         content_splitter = QSplitter(Qt.Orientation.Horizontal)
         content_splitter.setChildrenCollapsible(False)
 
-        # Graphics view for image + bounding boxes (with zoom support)
+        # Graphics view with floating zoom controls
         self.scene = QGraphicsScene()
-        self.graphics_view = ZoomableGraphicsView(self.scene)
-        self.graphics_view.setMinimumSize(400, 300)
-        content_splitter.addWidget(self.graphics_view)
+        self.image_viewer = ImageViewerWidget(self.scene)
+        self.image_viewer.setMinimumSize(400, 300)
+        self.graphics_view = self.image_viewer.graphics_view  # Reference for compatibility
+        content_splitter.addWidget(self.image_viewer)
 
         # Text output
         self.text_edit = QTextEdit()
@@ -374,10 +436,75 @@ class OCRApp(QMainWindow):
         self.reprocess_btn.clicked.connect(self.reprocess_ocr)
         self.prev_btn.clicked.connect(self.prev_page)
         self.next_btn.clicked.connect(self.next_page)
-        self.zoom_in_btn.clicked.connect(self.zoom_in)
-        self.zoom_out_btn.clicked.connect(self.zoom_out)
-        self.fit_btn.clicked.connect(self.fit_view)
         self.toggle_highlights.stateChanged.connect(self.toggle_highlight_visibility)
+
+        # Connect zoom controls
+        self.image_viewer.zoom_in_btn.clicked.connect(self.zoom_in)
+        self.image_viewer.zoom_out_btn.clicked.connect(self.zoom_out)
+        self.image_viewer.fit_btn.clicked.connect(self.fit_view)
+
+    def on_confidence_changed(self, value):
+        """Update stored confidence threshold when spinbox changes and update display in real-time"""
+        self.confidence_threshold = value
+
+        # If we have cached OCR data, update the display with new confidence immediately
+        if self.current_page_index in self.ocr_data_cache:
+            self.update_current_page_highlights()
+
+    def update_current_page_highlights(self):
+        """Update highlights and text on current page with current confidence threshold"""
+        if not self.temp_pages or self.current_page_index >= len(self.temp_pages):
+            return
+
+        # Remove existing highlights
+        for item in self.highlight_items:
+            self.scene.removeItem(item)
+        self.highlight_items = []
+
+        # Add highlights with current confidence threshold
+        if self.current_page_index in self.ocr_data_cache:
+            self.add_bounding_boxes(self.ocr_data_cache[self.current_page_index], self.confidence_threshold)
+
+        # Also update the text with current confidence filtering
+        if self.current_page_index in self.ocr_data_cache:
+            data = self.ocr_data_cache[self.current_page_index]
+            text_lines = self.extract_text_lines_from_data(data, self.confidence_threshold)
+            text = '\n'.join(text_lines)
+            self.text_edit.setPlainText(text)
+            # Update cache with new filtered text
+            self.text_cache[self.current_page_index] = text
+
+    def extract_text_lines_from_data(self, data, confidence_threshold):
+        """Extract text lines from OCR data with given confidence threshold"""
+        text_lines = []
+        current_line = []
+        last_block_num = last_par_num = last_line_num = -1
+
+        n_boxes = len(data.get('text', []))
+        for i in range(n_boxes):
+            try:
+                conf = float(data['conf'][i])
+            except Exception:
+                conf = -1.0
+            word = (data['text'][i] or '').strip()
+
+            if conf > confidence_threshold and word:
+                block_num = int(data.get('block_num', [0] * n_boxes)[i])
+                par_num = int(data.get('par_num', [0] * n_boxes)[i])
+                line_num = int(data.get('line_num', [0] * n_boxes)[i])
+
+                if (block_num != last_block_num) or (par_num != last_par_num) or (line_num != last_line_num):
+                    if current_line:
+                        text_lines.append(' '.join(current_line))
+                        current_line = []
+                    last_block_num, last_par_num, last_line_num = block_num, par_num, line_num
+
+                current_line.append(word)
+
+        if current_line:
+            text_lines.append(' '.join(current_line))
+
+        return text_lines
 
     def update_page_info(self):
         if self.temp_pages:
@@ -483,8 +610,8 @@ class OCRApp(QMainWindow):
         if not self.temp_pages:
             return
 
-        confidence_threshold = self.confidence_spinbox.value()
-        self.ocr_manager.start_processing(self.temp_pages, confidence_threshold)
+        # Use stored confidence threshold (always available)
+        self.ocr_manager.start_processing(self.temp_pages, self.confidence_threshold)
 
     def reprocess_ocr(self):
         """Reprocess OCR with current confidence threshold"""
@@ -550,9 +677,7 @@ class OCRApp(QMainWindow):
         if hasattr(self, 'confidence_spinbox') and self.confidence_spinbox is not None:
             try:
                 self.confidence_spinbox.setEnabled(enabled)
-                # Sync stored value with widget when re-enabling
-                if enabled:
-                    self.confidence_spinbox.setValue(self.confidence_threshold)
+                # DO NOT reset the value - keep user's setting
             except RuntimeError:
                 # Widget has been deleted, ignore
                 pass
@@ -590,11 +715,8 @@ class OCRApp(QMainWindow):
 
         # Add bounding boxes if OCR data is available
         if self.current_page_index in self.ocr_data_cache:
-            try:
-                confidence_threshold = self.confidence_spinbox.value()
-            except (RuntimeError, AttributeError):
-                confidence_threshold = 40  # Fallback
-            self.add_bounding_boxes(self.ocr_data_cache[self.current_page_index], confidence_threshold)
+            # Use stored confidence threshold (always available)
+            self.add_bounding_boxes(self.ocr_data_cache[self.current_page_index], self.confidence_threshold)
 
         # Set text if available
         if self.current_page_index in self.text_cache:
