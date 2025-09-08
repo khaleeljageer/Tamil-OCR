@@ -75,7 +75,7 @@ class OCRTask(QRunnable):
         try:
             # Process OCR for this page
             pil_img = Image.open(self.image_path).convert('RGB')
-            ocr_data = pytesseract.image_to_data(pil_img, lang='tam_new', output_type=pytesseract.Output.DICT)
+            ocr_data = pytesseract.image_to_data(pil_img, lang='tam_new+eng', output_type=pytesseract.Output.DICT)
 
             # Extract text with confidence filtering
             text_lines = self.extract_text_lines(ocr_data, self.confidence_threshold)
