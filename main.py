@@ -287,7 +287,7 @@ class OCRApp(QMainWindow):
         self.text_cache = {}  # Cache text for each page
 
         # Store confidence threshold value directly to prevent widget issues
-        self.confidence_threshold = 40  # Default value
+        self.confidence_threshold = 0  # Default value
 
         # Workers
         self.pdf_worker = None
