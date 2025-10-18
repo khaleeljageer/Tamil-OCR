@@ -5,12 +5,12 @@ import tempfile
 import pytesseract
 from PIL import Image
 from PyQt6.QtCore import Qt, QRectF, QThread, pyqtSignal, QTimer, QThreadPool, QRunnable
-from PyQt6.QtGui import QPixmap, QPen, QColor, QBrush, QPainter, QIcon
+from PyQt6.QtGui import QPixmap, QPen, QColor, QBrush, QPainter
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout,
     QLabel, QPushButton, QFileDialog, QTextEdit, QHBoxLayout, QSplitter,
     QGraphicsView, QGraphicsScene, QGraphicsPixmapItem, QGraphicsRectItem,
-    QCheckBox, QProgressBar, QStatusBar, QSpinBox, QFrame
+    QCheckBox, QProgressBar, QStatusBar, QSpinBox, QFrame, QLineEdit
 )
 from pdf2image import convert_from_path
 
@@ -64,18 +64,19 @@ class PDFConversionWorker(QThread):
 class OCRTask(QRunnable):
     """Individual OCR task for parallel processing"""
 
-    def __init__(self, page_index, image_path, confidence_threshold, signals):
+    def __init__(self, page_index, image_path, confidence_threshold, lang_string, signals):
         super().__init__()
         self.page_index = page_index
         self.image_path = image_path
         self.confidence_threshold = confidence_threshold
+        self.lang_string = lang_string
         self.signals = signals
 
     def run(self):
         try:
             # Process OCR for this page
             pil_img = Image.open(self.image_path).convert('RGB')
-            ocr_data = pytesseract.image_to_data(pil_img, lang='tam_new+eng', output_type=pytesseract.Output.DICT)
+            ocr_data = pytesseract.image_to_data(pil_img, lang=self.lang_string, output_type=pytesseract.Output.DICT)
 
             # Extract text with confidence filtering
             text_lines = self.extract_text_lines(ocr_data, self.confidence_threshold)
@@ -138,7 +139,7 @@ class OCRManager(QWidget):
         self.total_pages = 0
         self.completed_pages = 0
 
-    def start_processing(self, image_paths, confidence_threshold):
+    def start_processing(self, image_paths, confidence_threshold, lang_string):
         self.total_pages = len(image_paths)
         self.completed_pages = 0
 
@@ -149,7 +150,7 @@ class OCRManager(QWidget):
 
         # Create and queue OCR tasks
         for i, image_path in enumerate(image_paths):
-            task = OCRTask(i, image_path, confidence_threshold, self.signals)
+            task = OCRTask(i, image_path, confidence_threshold, lang_string, self.signals)
             self.thread_pool.start(task)
 
     def on_page_completed(self, page_index, text, ocr_data):
@@ -365,6 +366,12 @@ class OCRApp(QMainWindow):
         # Connect confidence change signal for real-time updates
         self.confidence_spinbox.valueChanged.connect(self.on_confidence_changed)
 
+        # Language input
+        lang_label = QLabel("Tesseract Langs:")
+        self.lang_input = QLineEdit("tam_new+eng")
+        self.lang_input.setFixedWidth(120)
+        self.lang_input.setToolTip("Enter language codes separated by '+' (e.g., tam+eng)")
+
         # Navigation
         self.prev_btn = QPushButton("← Prev Page")
         self.prev_btn.setMinimumWidth(100)
@@ -395,13 +402,22 @@ class OCRApp(QMainWindow):
         controls_layout.addWidget(conf_label)
         controls_layout.addWidget(self.confidence_spinbox)
 
-        controls_layout.addStretch()  # Push navigation to the right
-
         # Separator
         separator3 = QFrame()
         separator3.setFrameShape(QFrame.Shape.VLine)
         separator3.setFrameShadow(QFrame.Shadow.Sunken)
+
         controls_layout.addWidget(separator3)
+        controls_layout.addWidget(lang_label)
+        controls_layout.addWidget(self.lang_input)
+
+        controls_layout.addStretch()  # Push navigation to the right
+
+        # Separator
+        separator4 = QFrame()
+        separator4.setFrameShape(QFrame.Shape.VLine)
+        separator4.setFrameShadow(QFrame.Shadow.Sunken)
+        controls_layout.addWidget(separator4)
 
         controls_layout.addWidget(self.prev_btn)
         controls_layout.addWidget(self.next_btn)
@@ -610,8 +626,15 @@ class OCRApp(QMainWindow):
         if not self.temp_pages:
             return
 
+        # Get language string from input
+        lang_string = self.lang_input.text().strip()
+        if not lang_string:
+            # Fallback to default if empty
+            lang_string = "tam_new+eng"
+            self.lang_input.setText(lang_string)
+
         # Use stored confidence threshold (always available)
-        self.ocr_manager.start_processing(self.temp_pages, self.confidence_threshold)
+        self.ocr_manager.start_processing(self.temp_pages, self.confidence_threshold, lang_string)
 
     def reprocess_ocr(self):
         """Reprocess OCR with current confidence threshold"""
@@ -681,6 +704,8 @@ class OCRApp(QMainWindow):
             except RuntimeError:
                 # Widget has been deleted, ignore
                 pass
+        if hasattr(self, 'lang_input') and self.lang_input is not None:
+            self.lang_input.setEnabled(enabled)
 
     def display_image_only(self, image_path):
         """Display just the image without OCR bounding boxes"""
