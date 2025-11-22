@@ -14,17 +14,13 @@ from PyQt6.QtWidgets import (
 )
 from pdf2image import convert_from_path
 
-# This ensures that the Tesseract engine uses the .traineddata files
-# included in this repository.
 tessdata_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'tessdata')
 os.environ['TESSDATA_PREFIX'] = tessdata_dir
-# --- End Tesseract Configuration ---
-
 
 class PDFConversionWorker(QThread):
     """Separate worker for PDF to image conversion to prevent UI freeze"""
-    pages_converted = pyqtSignal(list)  # List of image paths
-    conversion_progress = pyqtSignal(int, str)  # progress, status message
+    pages_converted = pyqtSignal(list)
+    conversion_progress = pyqtSignal(int, str)
     error_occurred = pyqtSignal(str)
 
     def __init__(self, pdf_path):
@@ -55,7 +51,7 @@ class PDFConversionWorker(QThread):
                 temp_paths.append(tmp_path)
 
                 # Update progress
-                progress = 10 + int((i + 1) / total_pages * 30)  # 10-40% for conversion
+                progress = 10 + int((i + 1) / total_pages * 30)
                 self.conversion_progress.emit(progress, f"Converting page {i + 1}/{total_pages}...")
 
             self.pages_converted.emit(temp_paths)
@@ -131,20 +127,20 @@ class OCRTask(QRunnable):
 
 class OCRSignals(QWidget):
     """Signals for OCR parallel processing"""
-    page_processed = pyqtSignal(int, str, object)  # page_index, text, ocr_data
+    page_processed = pyqtSignal(int, str, object)
     error_occurred = pyqtSignal(str)
 
 
 class OCRManager(QWidget):
     """Manages parallel OCR processing"""
     processing_complete = pyqtSignal()
-    progress_update = pyqtSignal(int, str)  # progress, status
+    progress_update = pyqtSignal(int, str)
 
     def __init__(self):
         super().__init__()
         self.signals = OCRSignals()
         self.thread_pool = QThreadPool()
-        self.thread_pool.setMaxThreadCount(min(4, os.cpu_count() or 2))  # Limit concurrent threads
+        self.thread_pool.setMaxThreadCount(min(4, os.cpu_count() or 2))
         self.total_pages = 0
         self.completed_pages = 0
 
@@ -287,17 +283,16 @@ class OCRApp(QMainWindow):
         self.setWindowTitle("Tamil OCR Desktop App")
         self.setGeometry(200, 100, 1200, 800)
 
-        # State for multi-page documents
-        self.temp_pages = []  # list of temporary image paths
+        self.temp_pages = []
         self.current_page_index = 0
-        self.pix_item = None  # current displayed pixmap item
+        self.pix_item = None
         self.highlight_items = []
         self.highlights_visible = True
-        self.ocr_data_cache = {}  # Cache OCR data for each page
-        self.text_cache = {}  # Cache text for each page
+        self.ocr_data_cache = {}
+        self.text_cache = {}
 
         # Store confidence threshold value directly to prevent widget issues
-        self.confidence_threshold = 0  # Default value
+        self.confidence_threshold = 0
 
         # Workers
         self.pdf_worker = None
