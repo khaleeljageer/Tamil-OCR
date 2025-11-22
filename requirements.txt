@@ -4,3 +4,4 @@ pdf2image
 Pillow
 PyMuPDF
 fitz
+pyinstaller

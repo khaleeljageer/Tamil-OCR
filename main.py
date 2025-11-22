@@ -14,6 +14,12 @@ from PyQt6.QtWidgets import (
 )
 from pdf2image import convert_from_path
 
+# This ensures that the Tesseract engine uses the .traineddata files
+# included in this repository.
+tessdata_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'tessdata')
+os.environ['TESSDATA_PREFIX'] = tessdata_dir
+# --- End Tesseract Configuration ---
+
 
 class PDFConversionWorker(QThread):
     """Separate worker for PDF to image conversion to prevent UI freeze"""
@@ -71,6 +77,9 @@ class OCRTask(QRunnable):
         self.confidence_threshold = confidence_threshold
         self.lang_string = lang_string
         self.signals = signals
+
+        print(pytesseract.get_languages(config='.'))
+        print(pytesseract.get_tesseract_version())
 
     def run(self):
         try:
@@ -368,7 +377,7 @@ class OCRApp(QMainWindow):
 
         # Language input
         lang_label = QLabel("Tesseract Langs:")
-        self.lang_input = QLineEdit("tam_new+eng")
+        self.lang_input = QLineEdit("tam_cus+eng")
         self.lang_input.setFixedWidth(120)
         self.lang_input.setToolTip("Enter language codes separated by '+' (e.g., tam+eng)")
 
@@ -630,7 +639,7 @@ class OCRApp(QMainWindow):
         lang_string = self.lang_input.text().strip()
         if not lang_string:
             # Fallback to default if empty
-            lang_string = "tam_new+eng"
+            lang_string = "tam_cus+eng"
             self.lang_input.setText(lang_string)
 
         # Use stored confidence threshold (always available)
