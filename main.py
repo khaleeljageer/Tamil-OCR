@@ -4,6 +4,20 @@ import tempfile
 
 import pytesseract
 from PIL import Image
+
+
+# Helper function to get resource paths for PyInstaller
+def resource_path(relative_path):
+    """ Get absolute path to resource, works for dev and for PyInstaller """
+    try:
+        # PyInstaller creates a temp folder and stores path in _MEIPASS
+        base_path = sys._MEIPASS
+    except Exception:
+        base_path = os.path.abspath(".")
+
+    return os.path.join(base_path, relative_path)
+
+
 from PyQt6.QtCore import Qt, QRectF, QThread, pyqtSignal, QTimer, QThreadPool, QRunnable
 from PyQt6.QtGui import QPixmap, QPen, QColor, QBrush, QPainter
 from PyQt6.QtWidgets import (
@@ -14,9 +28,9 @@ from PyQt6.QtWidgets import (
 )
 from pdf2image import convert_from_path
 
-tessdata_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'tessdata')
+tessdata_dir = resource_path('tessdata')
 os.environ['TESSDATA_PREFIX'] = tessdata_dir
-pytesseract.pytesseract.tesseract_cmd = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'tesseract', 'tesseract.AppImage')
+pytesseract.pytesseract.tesseract_cmd = resource_path('tesseract/tesseract.AppImage')
 
 class PDFConversionWorker(QThread):
     """Separate worker for PDF to image conversion to prevent UI freeze"""

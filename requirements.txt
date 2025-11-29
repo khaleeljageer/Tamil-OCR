@@ -1,7 +1,4 @@
-PyQt6==6.10.0
+PyQt6
+Pillow
 pytesseract
 pdf2image
-Pillow
-PyMuPDF
-fitz
-pyinstaller
