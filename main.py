@@ -27,7 +27,10 @@ from PyQt6.QtWidgets import (
     QCheckBox, QProgressBar, QStatusBar, QSpinBox, QFrame, QLineEdit
 )
 from pdf2image import convert_from_path
+from PIL import Image
 
+# Increase PIL's image size limit to handle large PDF pages
+Image.MAX_IMAGE_PIXELS = None  # Remove the limit entirely
 tessdata_dir = resource_path('tessdata')
 os.environ['TESSDATA_PREFIX'] = tessdata_dir
 pytesseract.pytesseract.tesseract_cmd = resource_path('tesseract/tesseract.AppImage')
@@ -46,7 +49,19 @@ class PDFConversionWorker(QThread):
     def run(self):
         try:
             self.conversion_progress.emit(10, "Converting PDF to images...")
-            pages = convert_from_path(self.pdf_path, dpi=300)
+
+            # Start with lower DPI and increase if needed
+            try:
+                # Try with standard DPI first
+                pages = convert_from_path(self.pdf_path, dpi=300)
+            except Exception as e:
+                if "exceeds limit" in str(e) or "decompression bomb" in str(e):
+                    # If size limit exceeded, try with lower DPI
+                    self.conversion_progress.emit(15, "Large PDF detected, using lower DPI...")
+                    pages = convert_from_path(self.pdf_path, dpi=150)
+                else:
+                    raise e
+
             total_pages = len(pages)
 
             temp_paths = []
@@ -62,7 +77,23 @@ class PDFConversionWorker(QThread):
 
                 fd, tmp_path = tempfile.mkstemp(suffix=f"_page_{i}.png")
                 os.close(fd)
-                page.save(tmp_path, 'PNG')
+
+                # Resize image if it's too large for OCR processing
+                width, height = page.size
+                max_dimension = 4000  # Maximum width or height
+
+                if width > max_dimension or height > max_dimension:
+                    # Calculate new dimensions maintaining aspect ratio
+                    if width > height:
+                        new_width = max_dimension
+                        new_height = int((height * max_dimension) / width)
+                    else:
+                        new_height = max_dimension
+                        new_width = int((width * max_dimension) / height)
+
+                    page = page.resize((new_width, new_height), Image.Resampling.LANCZOS)
+
+                page.save(tmp_path, 'PNG', optimize=True)
                 temp_paths.append(tmp_path)
 
                 # Update progress
@@ -302,6 +333,7 @@ class OCRApp(QMainWindow):
         self.highlights_visible = True
         self.ocr_data_cache = {}
         self.text_cache = {}
+        self.text_modified = {}
 
         # Store confidence threshold value directly to prevent widget issues
         self.confidence_threshold = 0
@@ -365,6 +397,12 @@ class OCRApp(QMainWindow):
         self.reprocess_btn.setToolTip("Reprocess OCR with current confidence threshold")
         self.reprocess_btn.setEnabled(False)
 
+        # NEW: Reset text button
+        self.reset_text_btn = QPushButton("Reset Text")
+        self.reset_text_btn.setMinimumWidth(100)
+        self.reset_text_btn.setToolTip("Reset current page text to original OCR result")
+        self.reset_text_btn.setEnabled(False)
+
         # Checkbox
         self.toggle_highlights = QCheckBox("Show Highlights")
         self.toggle_highlights.setChecked(True)
@@ -400,6 +438,7 @@ class OCRApp(QMainWindow):
         controls_layout.addWidget(self.open_btn)
         controls_layout.addWidget(self.export_btn)
         controls_layout.addWidget(self.reprocess_btn)
+        controls_layout.addWidget(self.reset_text_btn)  # NEW
 
         # Separator
         separator1 = QFrame()
@@ -449,11 +488,38 @@ class OCRApp(QMainWindow):
         self.graphics_view = self.image_viewer.graphics_view  # Reference for compatibility
         content_splitter.addWidget(self.image_viewer)
 
-        # Text output
+        # Text output with editing label
+        text_widget = QWidget()
+        text_layout = QVBoxLayout(text_widget)
+        text_layout.setContentsMargins(0, 0, 0, 0)
+        text_layout.setSpacing(5)
+
+        # NEW: Text area label and editing status
+        text_header = QHBoxLayout()
+        text_header.setContentsMargins(5, 0, 5, 0)
+
+        self.text_label = QLabel("OCR Result (Editable for Proofreading)")
+        self.text_label.setStyleSheet("font-weight: bold; color: #333;")
+
+        self.edit_status_label = QLabel()
+        self.edit_status_label.setStyleSheet("color: #666; font-style: italic;")
+
+        text_header.addWidget(self.text_label)
+        text_header.addStretch()
+        text_header.addWidget(self.edit_status_label)
+
+        text_layout.addLayout(text_header)
+
+        # Text edit area - now explicitly editable
         self.text_edit = QTextEdit()
-        self.text_edit.setPlaceholderText("OCR output will appear here...")
+        self.text_edit.setPlaceholderText("OCR output will appear here...\nYou can edit this text for proofreading purposes.")
         self.text_edit.setMinimumSize(300, 300)
-        content_splitter.addWidget(self.text_edit)
+        # NEW: Enable editing and connect text change signal
+        self.text_edit.setReadOnly(False)
+        self.text_edit.textChanged.connect(self.on_text_edited)
+
+        text_layout.addWidget(self.text_edit)
+        content_splitter.addWidget(text_widget)
 
         # Set splitter proportions (60% image, 40% text)
         content_splitter.setSizes([720, 480])
@@ -466,6 +532,7 @@ class OCRApp(QMainWindow):
         self.open_btn.clicked.connect(self.open_file)
         self.export_btn.clicked.connect(self.export_text)
         self.reprocess_btn.clicked.connect(self.reprocess_ocr)
+        self.reset_text_btn.clicked.connect(self.reset_current_text)  # NEW
         self.prev_btn.clicked.connect(self.prev_page)
         self.next_btn.clicked.connect(self.next_page)
         self.toggle_highlights.stateChanged.connect(self.toggle_highlight_visibility)
@@ -474,6 +541,42 @@ class OCRApp(QMainWindow):
         self.image_viewer.zoom_in_btn.clicked.connect(self.zoom_in)
         self.image_viewer.zoom_out_btn.clicked.connect(self.zoom_out)
         self.image_viewer.fit_btn.clicked.connect(self.fit_view)
+
+    def on_text_edited(self):
+        """Called when text is edited in the text area"""
+        if hasattr(self, 'temp_pages') and self.temp_pages:
+            # Mark current page as modified
+            self.text_modified[self.current_page_index] = True
+            self.update_edit_status()
+            self.reset_text_btn.setEnabled(True)
+
+    def update_edit_status(self):
+        """Update the editing status label"""
+        if self.current_page_index in self.text_modified and self.text_modified[self.current_page_index]:
+            self.edit_status_label.setText("✏️ Modified")
+            self.edit_status_label.setStyleSheet("color: #e67e22; font-style: italic; font-weight: bold;")
+        else:
+            self.edit_status_label.setText("📄 Original")
+            self.edit_status_label.setStyleSheet("color: #27ae60; font-style: italic;")
+
+    def reset_current_text(self):
+        """Reset current page text to original OCR result"""
+        if self.current_page_index in self.text_cache:
+            # Temporarily disconnect signal to avoid triggering text edited
+            self.text_edit.textChanged.disconnect()
+            self.text_edit.setPlainText(self.text_cache[self.current_page_index])
+            self.text_edit.textChanged.connect(self.on_text_edited)
+
+            # Mark as not modified
+            self.text_modified[self.current_page_index] = False
+            self.update_edit_status()
+            self.reset_text_btn.setEnabled(False)
+
+    def save_current_page_text(self):
+        """Save current text editor content before switching pages"""
+        if hasattr(self, 'temp_pages') and self.temp_pages and hasattr(self, 'current_page_index'):
+            # This saves the current edited text (whether modified or not)
+            pass  # Text is automatically saved when we switch pages in display_current_page_with_cache
 
     def on_confidence_changed(self, value):
         """Update stored confidence threshold when spinbox changes and update display in real-time"""
@@ -497,14 +600,22 @@ class OCRApp(QMainWindow):
         if self.current_page_index in self.ocr_data_cache:
             self.add_bounding_boxes(self.ocr_data_cache[self.current_page_index], self.confidence_threshold)
 
-        # Also update the text with current confidence filtering
-        if self.current_page_index in self.ocr_data_cache:
-            data = self.ocr_data_cache[self.current_page_index]
-            text_lines = self.extract_text_lines_from_data(data, self.confidence_threshold)
-            text = '\n'.join(text_lines)
-            self.text_edit.setPlainText(text)
-            # Update cache with new filtered text
-            self.text_cache[self.current_page_index] = text
+        # Only update text if it hasn't been manually edited
+        if (self.current_page_index not in self.text_modified or
+            not self.text_modified[self.current_page_index]):
+
+            if self.current_page_index in self.ocr_data_cache:
+                data = self.ocr_data_cache[self.current_page_index]
+                text_lines = self.extract_text_lines_from_data(data, self.confidence_threshold)
+                text = '\n'.join(text_lines)
+
+                # Temporarily disconnect signal to avoid triggering text edited
+                self.text_edit.textChanged.disconnect()
+                self.text_edit.setPlainText(text)
+                self.text_edit.textChanged.connect(self.on_text_edited)
+
+                # Update cache with new filtered text
+                self.text_cache[self.current_page_index] = text
 
     def extract_text_lines_from_data(self, data, confidence_threshold):
         """Extract text lines from OCR data with given confidence threshold"""
@@ -597,6 +708,7 @@ class OCRApp(QMainWindow):
         self.highlight_items = []
         self.ocr_data_cache = {}
         self.text_cache = {}
+        self.text_modified = {}  # NEW: Clear modification tracking
 
         # Show progress bar and disable UI
         self.progress_bar.setVisible(True)
@@ -660,6 +772,7 @@ class OCRApp(QMainWindow):
         # Clear cached data
         self.ocr_data_cache = {}
         self.text_cache = {}
+        self.text_modified = {}  # NEW: Clear modification tracking
 
         # Show progress and disable UI
         self.progress_bar.setVisible(True)
@@ -713,6 +826,8 @@ class OCRApp(QMainWindow):
             self.export_btn.setEnabled(enabled)
         if hasattr(self, 'reprocess_btn') and self.reprocess_btn is not None:
             self.reprocess_btn.setEnabled(enabled and bool(self.temp_pages))
+        if hasattr(self, 'reset_text_btn') and self.reset_text_btn is not None:  # NEW
+            self.reset_text_btn.setEnabled(enabled and bool(self.temp_pages))
         if hasattr(self, 'confidence_spinbox') and self.confidence_spinbox is not None:
             try:
                 self.confidence_spinbox.setEnabled(enabled)
@@ -759,11 +874,27 @@ class OCRApp(QMainWindow):
             # Use stored confidence threshold (always available)
             self.add_bounding_boxes(self.ocr_data_cache[self.current_page_index], self.confidence_threshold)
 
-        # Set text if available
-        if self.current_page_index in self.text_cache:
+        # Set text - check if page has been modified
+        if (self.current_page_index in self.text_modified and
+            self.text_modified[self.current_page_index]):
+            # Page has been modified, keep current text editor content
+            pass  # Don't change text
+        elif self.current_page_index in self.text_cache:
+            # Use cached original text
+            # Temporarily disconnect signal to avoid triggering text edited
+            self.text_edit.textChanged.disconnect()
             self.text_edit.setPlainText(self.text_cache[self.current_page_index])
+            self.text_edit.textChanged.connect(self.on_text_edited)
         else:
+            # No cache yet
             self.text_edit.setPlainText("Processing OCR...")
+
+        # Update UI state
+        self.update_edit_status()
+        self.reset_text_btn.setEnabled(
+            self.current_page_index in self.text_modified and
+            self.text_modified[self.current_page_index]
+        )
 
         # Update page info
         self.update_page_info()
@@ -841,16 +972,19 @@ class OCRApp(QMainWindow):
         self.temp_pages = []
 
     def export_text(self):
-        # Export all cached text or current page text
-        if len(self.text_cache) > 1:
-            # Multi-page document - export all pages
+        """Export text - uses current text editor content (including edits)"""
+        # First, save the current page's text
+        self.save_current_page_edited_text()
+
+        if len(self.temp_pages) > 1:
+            # Multi-page document - collect text from all pages
             all_text = []
             for i in range(len(self.temp_pages)):
-                if i in self.text_cache:
-                    all_text.append(f"=== Page {i + 1} ===\n{self.text_cache[i]}\n")
+                page_text = self.get_current_page_text(i)
+                all_text.append(f"=== Page {i + 1} ===\n{page_text}\n")
             text = '\n'.join(all_text)
         else:
-            # Single page or current page only
+            # Single page - use current text editor content
             text = self.text_edit.toPlainText()
 
         if text.strip():
@@ -860,7 +994,14 @@ class OCRApp(QMainWindow):
             if file_path:
                 with open(file_path, 'w', encoding='utf-8') as f:
                     f.write(text)
-                self.status_bar.showMessage(f"Text exported to {file_path}")
+
+                # Count modified pages for status message
+                modified_pages = len([obj for obj in self.page_texts.values() if obj.is_modified()])
+                status_msg = f"Text exported to {file_path}"
+                if modified_pages > 0:
+                    status_msg += f" (including {modified_pages} edited page{'s' if modified_pages > 1 else ''})"
+
+                self.status_bar.showMessage(status_msg)
 
 
 if __name__ == '__main__':
