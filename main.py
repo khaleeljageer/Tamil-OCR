@@ -16,6 +16,7 @@ from pdf2image import convert_from_path
 
 tessdata_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'tessdata')
 os.environ['TESSDATA_PREFIX'] = tessdata_dir
+pytesseract.pytesseract.tesseract_cmd = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'tesseract', 'tesseract.AppImage')
 
 class PDFConversionWorker(QThread):
     """Separate worker for PDF to image conversion to prevent UI freeze"""
@@ -73,9 +74,6 @@ class OCRTask(QRunnable):
         self.confidence_threshold = confidence_threshold
         self.lang_string = lang_string
         self.signals = signals
-
-        print(pytesseract.get_languages(config='.'))
-        print(pytesseract.get_tesseract_version())
 
     def run(self):
         try:
