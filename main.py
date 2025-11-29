@@ -573,10 +573,10 @@ class OCRApp(QMainWindow):
             self.reset_text_btn.setEnabled(False)
 
     def save_current_page_text(self):
-        """Save current text editor content before switching pages"""
+        """Save current text editor content to cache before switching pages or exporting"""
         if hasattr(self, 'temp_pages') and self.temp_pages and hasattr(self, 'current_page_index'):
-            # This saves the current edited text (whether modified or not)
-            pass  # Text is automatically saved when we switch pages in display_current_page_with_cache
+            current_text = self.text_edit.toPlainText()
+            self.text_cache[self.current_page_index] = current_text
 
     def on_confidence_changed(self, value):
         """Update stored confidence threshold when spinbox changes and update display in real-time"""
@@ -769,6 +769,8 @@ class OCRApp(QMainWindow):
         if not self.temp_pages:
             return
 
+        self.save_current_page_text()  # Save current page's text before reprocessing
+
         # Clear cached data
         self.ocr_data_cache = {}
         self.text_cache = {}
@@ -874,14 +876,9 @@ class OCRApp(QMainWindow):
             # Use stored confidence threshold (always available)
             self.add_bounding_boxes(self.ocr_data_cache[self.current_page_index], self.confidence_threshold)
 
-        # Set text - check if page has been modified
-        if (self.current_page_index in self.text_modified and
-            self.text_modified[self.current_page_index]):
-            # Page has been modified, keep current text editor content
-            pass  # Don't change text
-        elif self.current_page_index in self.text_cache:
-            # Use cached original text
-            # Temporarily disconnect signal to avoid triggering text edited
+        # Set text based on cache
+        if self.current_page_index in self.text_cache:
+            # Use cached text (which includes user edits if saved)
             self.text_edit.textChanged.disconnect()
             self.text_edit.setPlainText(self.text_cache[self.current_page_index])
             self.text_edit.textChanged.connect(self.on_text_edited)
@@ -952,11 +949,13 @@ class OCRApp(QMainWindow):
             rect.setVisible(self.highlights_visible)
 
     def prev_page(self):
+        self.save_current_page_text()  # Save current page's text before switching
         if self.temp_pages and self.current_page_index > 0:
             self.current_page_index -= 1
             self.display_current_page_with_cache()
 
     def next_page(self):
+        self.save_current_page_text()  # Save current page's text before switching
         if self.temp_pages and self.current_page_index < len(self.temp_pages) - 1:
             self.current_page_index += 1
             self.display_current_page_with_cache()
@@ -973,19 +972,15 @@ class OCRApp(QMainWindow):
 
     def export_text(self):
         """Export text - uses current text editor content (including edits)"""
-        # First, save the current page's text
-        self.save_current_page_edited_text()
+        # First, save the current page's text to ensure edits are in cache
+        self.save_current_page_text()
 
-        if len(self.temp_pages) > 1:
-            # Multi-page document - collect text from all pages
-            all_text = []
-            for i in range(len(self.temp_pages)):
-                page_text = self.get_current_page_text(i)
-                all_text.append(f"=== Page {i + 1} ===\n{page_text}\n")
-            text = '\n'.join(all_text)
-        else:
-            # Single page - use current text editor content
-            text = self.text_edit.toPlainText()
+        all_text = []
+        for i in range(len(self.temp_pages)):
+            # Retrieve text for each page from the cache (which now includes edits)
+            page_text = self.text_cache.get(i, "")
+            all_text.append(f"=== Page {i + 1} ===\n{page_text}\n")
+        text = '\n'.join(all_text)
 
         if text.strip():
             file_path, _ = QFileDialog.getSaveFileName(
@@ -995,13 +990,7 @@ class OCRApp(QMainWindow):
                 with open(file_path, 'w', encoding='utf-8') as f:
                     f.write(text)
 
-                # Count modified pages for status message
-                modified_pages = len([obj for obj in self.page_texts.values() if obj.is_modified()])
-                status_msg = f"Text exported to {file_path}"
-                if modified_pages > 0:
-                    status_msg += f" (including {modified_pages} edited page{'s' if modified_pages > 1 else ''})"
-
-                self.status_bar.showMessage(status_msg)
+                self.status_bar.showMessage(f"Text exported to {file_path}")
 
 
 if __name__ == '__main__':
