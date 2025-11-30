@@ -3,7 +3,6 @@ import sys
 import tempfile
 
 import pytesseract
-from PIL import Image
 
 
 # Helper function to get resource paths for PyInstaller
@@ -34,6 +33,7 @@ Image.MAX_IMAGE_PIXELS = None  # Remove the limit entirely
 tessdata_dir = resource_path('tessdata')
 os.environ['TESSDATA_PREFIX'] = tessdata_dir
 pytesseract.pytesseract.tesseract_cmd = resource_path('tesseract/tesseract.AppImage')
+
 
 class PDFConversionWorker(QThread):
     """Separate worker for PDF to image conversion to prevent UI freeze"""
@@ -183,7 +183,7 @@ class OCRManager(QWidget):
         super().__init__()
         self.signals = OCRSignals()
         self.thread_pool = QThreadPool()
-        self.thread_pool.setMaxThreadCount(min(4, os.cpu_count() or 2))
+        self.thread_pool.setMaxThreadCount(max(4, (os.cpu_count() - 1) or 2))
         self.total_pages = 0
         self.completed_pages = 0
 
@@ -201,7 +201,7 @@ class OCRManager(QWidget):
             task = OCRTask(i, image_path, confidence_threshold, lang_string, self.signals)
             self.thread_pool.start(task)
 
-    def on_page_completed(self, page_index, text, ocr_data):
+    def on_page_completed(self):
         self.completed_pages += 1
         progress = 40 + int((self.completed_pages / self.total_pages) * 60)  # 40-100%
         self.progress_update.emit(progress, f"Processed page {self.completed_pages}/{self.total_pages}")
@@ -512,7 +512,8 @@ class OCRApp(QMainWindow):
 
         # Text edit area - now explicitly editable
         self.text_edit = QTextEdit()
-        self.text_edit.setPlaceholderText("OCR output will appear here...\nYou can edit this text for proofreading purposes.")
+        self.text_edit.setPlaceholderText(
+            "OCR output will appear here...\nYou can edit this text for proofreading purposes.")
         self.text_edit.setMinimumSize(300, 300)
         # NEW: Enable editing and connect text change signal
         self.text_edit.setReadOnly(False)
@@ -602,7 +603,7 @@ class OCRApp(QMainWindow):
 
         # Only update text if it hasn't been manually edited
         if (self.current_page_index not in self.text_modified or
-            not self.text_modified[self.current_page_index]):
+                not self.text_modified[self.current_page_index]):
 
             if self.current_page_index in self.ocr_data_cache:
                 data = self.ocr_data_cache[self.current_page_index]
