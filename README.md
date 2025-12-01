@@ -1,54 +1,38 @@
-# Tamil OCR Desktop
+# Tamil OCR Desktop Application
 
-A desktop application for performing Optical Character Recognition (OCR) on Tamil text from images and PDF files.
+This is a desktop application for performing Optical Character Recognition (OCR) on images and PDF files, with a focus on Tamil and English languages.
 
 ## Features
 
-*   **Image and PDF Support:** Open and process various image formats (`.png`, `.jpg`, `.jpeg`, `.tif`, `.tiff`) and PDF files.
-*   **Bundled Language Data:** Uses Tesseract OCR engine with the specific `tam_new` and `eng` language models, which are included in this repository.
-*   **Interactive UI:**
-    *   View images and navigate through multi-page PDF documents.
-    *   Zoom, pan, and fit the image to the screen.
-    *   Highlight recognized text directly on the image.
-    *   Adjust the OCR confidence threshold to filter out uncertain results in real-time.
-*   **Text Export:** Save the recognized text from a single page or an entire document to a `.txt` file.
-*   **Drag and Drop:** Easily open files by dragging and dropping them onto the application window.
+*   **Cross-Platform:** Built with PyQt6 and can be compiled into a standalone executable for Linux.
+*   **Image and PDF Support:** Open various image formats (PNG, JPG, etc.) and multi-page PDF documents.
+*   **Efficient PDF Processing:** Converts PDFs to images in a separate thread to keep the UI responsive, with handling for large files.
+*   **Parallel OCR:** Utilizes multiple CPU cores to process pages in parallel, significantly speeding up OCR tasks.
+*   **Tesseract Integration:** Powered by the Tesseract OCR engine.
+*   **Custom Models:** Comes bundled with a custom Tamil Tesseract model (`tam_cus`) and the standard English model.
+*   **Interactive Image Viewer:**
+    *   View document pages with zoom and fit-to-screen controls.
+    *   Highlights recognized words with bounding boxes.
+    *   Toggle highlights on or off for better readability.
+*   **Advanced OCR Controls:**
+    *   **Confidence Threshold:** Adjust the minimum confidence level (0-100%) to filter out uncertain results. Changes are reflected in real-time.
+    *   **Language Selection:** Easily specify which Tesseract language models to use (e.g., `tam_cus+eng`).
+*   **Rich Text Editor:**
+    *   View and **edit** the extracted OCR text for proofreading and corrections.
+    *   The application tracks edited pages and allows you to reset the text back to the original OCR result.
+    *   Adjust the editor's font size for comfort.
+    *   Includes a custom Tamil font (`marutham.ttf`) for proper rendering.
+*   **Export Functionality:** Save the final, proofread text from all pages into a single `.txt` file.
+*   **Drag and Drop:** Quickly open files by dragging them onto the application window.
 
----
+## Setup and Installation
 
-## Project Setup Guide
+### Prerequisites
 
-This guide will walk you through setting up the project on your local machine.
+*   Python 3.x
+*   Tesseract OCR Engine (The application comes bundled with a Tesseract AppImage for Linux).
 
-### 1. Prerequisites
-
-*   **Python 3.8+**
-*   **Git** and **Git LFS** (for handling the language data files).
-*   **Tesseract OCR Engine v5.3.0** (or a compatible v5.x version).
-
-### 2. Tesseract OCR Engine Installation
-
-It is crucial to install the Tesseract engine itself, but **do not** install any system-wide language packs (like `tesseract-ocr-tam`). The required language files are included in this repository.
-
-#### **Windows**
-1.  Download and run the Tesseract installer from the [**UB Mannheim GitHub page**](https://github.com/UB-Mannheim/tesseract/wiki). We recommend a v5.x version.
-2.  During installation, you can **uncheck all language data**, as it is not needed.
-3.  **Important:** Make sure the Tesseract installation directory (e.g., `C:\Program Files\Tesseract-OCR`) is added to your system's `PATH` environment variable.
-
-#### **macOS**
-The easiest way to install Tesseract is using [Homebrew](https://brew.sh/).
-```bash
-# Install Tesseract
-brew install tesseract
-```
-
-#### **Linux (Ubuntu/Debian)**
-```bash
-sudo apt update
-sudo apt install tesseract-ocr
-```
-
-### 3. Project Code and Dependencies
+### Steps
 
 1.  **Clone the repository:**
     ```bash
@@ -56,50 +40,58 @@ sudo apt install tesseract-ocr
     cd Tamil-OCR
     ```
 
-2.  **Set up Git LFS:**
-    The language data files (`.traineddata`) are stored using Git LFS. You need to fetch them.
+2.  **Create a virtual environment (recommended):**
     ```bash
-    # Install Git LFS on your system (one-time setup)
-    git lfs install
-
-    # Pull the LFS files for this repository
-    git lfs pull
-    ```
-    This will download the `tam_new.traineddata` file into the `tessdata` directory.
-
-3.  **Create and activate a virtual environment (recommended):**
-    ```bash
-    # Create the virtual environment
     python3 -m venv .venv
-
-    # Activate it
-    # On macOS/Linux:
     source .venv/bin/activate
-    # On Windows:
-    # .\.venv\Scripts\activate
     ```
 
-4.  **Install the required Python packages:**
+3.  **Install the required Python packages:**
     ```bash
     pip install -r requirements.txt
     ```
 
-### 4. Running the Application
+## How to Run the Application
 
-Once the setup is complete, you can run the application from your terminal:
+Once the setup is complete, you can run the application from the source code:
+
 ```bash
 python main.py
 ```
 
----
+## How to Compile (Linux)
 
-## Core Dependencies
+This project uses PyInstaller to create a standalone executable.
 
-*   [PyQt6](https://pypi.org/project/PyQt6/)
-*   [pytesseract](https://pypi.org/project/pytesseract/)
-*   [pdf2image](https://pypi.org/project/pdf2image/)
-*   [Pillow](https://pypi.org/project/Pillow/)
+1.  **Install PyInstaller:**
+    ```bash
+    pip install pyinstaller
+    ```
 
-## Future Plans
+2.  **Run the PyInstaller command:**
 
-*   **Image Preprocessing:** Implement automatic image preprocessing techniques (e.g., binarization, noise reduction, deskewing) to improve OCR accuracy.
+The following command will bundle the Python script, assets (fonts, Tesseract data), and the Tesseract AppImage into a single executable file located in the `dist` directory.
+
+```bash
+pyinstaller --name "Tamil-OCR" \
+            --onefile \
+            --windowed \
+            --add-data "font/marutham.ttf:font" \
+            --add-data "tessdata/eng.traineddata:tessdata" \
+            --add-data "tessdata/tam_cus.traineddata:tessdata" \
+            --add-binary "tesseract/tesseract.AppImage:tesseract" \
+            main.py
+```
+
+3.  **Make the executable runnable:**
+
+After building, you need to give the generated file execute permissions.
+
+```bash
+chmod +x dist/Tamil-OCR
+```
+
+4.  **Run the compiled application:**
+    ```bash
+    ./dist/Tamil-OCR
+    ```
