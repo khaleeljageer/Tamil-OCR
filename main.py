@@ -1,6 +1,8 @@
 import os
 import sys
 import tempfile
+import logging
+import time
 
 import pytesseract
 
@@ -11,14 +13,15 @@ def resource_path(relative_path):
     try:
         # PyInstaller creates a temp folder and stores path in _MEIPASS
         base_path = sys._MEIPASS
-    except Exception:
+    except Exception as e:
+        print(f"Error in resource_path: {e}")
         base_path = os.path.abspath(".")
 
     return os.path.join(base_path, relative_path)
 
 
 from PyQt6.QtCore import Qt, QRectF, QThread, pyqtSignal, QTimer, QThreadPool, QRunnable
-from PyQt6.QtGui import QPixmap, QPen, QColor, QBrush, QPainter
+from PyQt6.QtGui import QPixmap, QPen, QColor, QBrush, QPainter, QFontDatabase
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout,
     QLabel, QPushButton, QFileDialog, QTextEdit, QHBoxLayout, QSplitter,
@@ -54,13 +57,14 @@ class PDFConversionWorker(QThread):
             try:
                 # Try with standard DPI first
                 pages = convert_from_path(self.pdf_path, dpi=300)
-            except Exception as e:
-                if "exceeds limit" in str(e) or "decompression bomb" in str(e):
+            except Exception as error:
+                print(f"Error converting PDF with standard DPI: {error}")
+                if "exceeds limit" in str(error) or "decompression bomb" in str(error):
                     # If size limit exceeded, try with lower DPI
                     self.conversion_progress.emit(15, "Large PDF detected, using lower DPI...")
                     pages = convert_from_path(self.pdf_path, dpi=150)
                 else:
-                    raise e
+                    raise error
 
             total_pages = len(pages)
 
@@ -71,7 +75,8 @@ class PDFConversionWorker(QThread):
                     for path in temp_paths:
                         try:
                             os.remove(path)
-                        except:
+                        except Exception as error:
+                            print(f"Error removing temp file: {error}")
                             pass
                     return
 
@@ -93,7 +98,7 @@ class PDFConversionWorker(QThread):
 
                     page = page.resize((new_width, new_height), Image.Resampling.LANCZOS)
 
-                page.save(tmp_path, 'PNG', optimize=True)
+                page.save(tmp_path, 'PNG')
                 temp_paths.append(tmp_path)
 
                 # Update progress
@@ -102,8 +107,9 @@ class PDFConversionWorker(QThread):
 
             self.pages_converted.emit(temp_paths)
 
-        except Exception as e:
-            self.error_occurred.emit(f"PDF conversion error: {str(e)}")
+        except Exception as error:
+            print(f"PDF conversion error: {error}")
+            self.error_occurred.emit(f"PDF conversion error: {str(error)}")
 
     def stop(self):
         self.should_stop = True
@@ -124,7 +130,12 @@ class OCRTask(QRunnable):
         try:
             # Process OCR for this page
             pil_img = Image.open(self.image_path).convert('RGB')
-            ocr_data = pytesseract.image_to_data(pil_img, lang=self.lang_string, output_type=pytesseract.Output.DICT)
+            try:
+                ocr_data = pytesseract.image_to_data(pil_img, lang=self.lang_string, output_type=pytesseract.Output.DICT)
+            except Exception as e:
+                print(f"Pytesseract error on page {self.page_index + 1}: {e}")
+                self.signals.error_occurred.emit(f"Pytesseract error on page {self.page_index + 1}: {str(e)}")
+                return
 
             # Extract text with confidence filtering
             text_lines = self.extract_text_lines(ocr_data, self.confidence_threshold)
@@ -134,6 +145,7 @@ class OCRTask(QRunnable):
             self.signals.page_processed.emit(self.page_index, text, ocr_data)
 
         except Exception as e:
+            print(f"OCR error on page {self.page_index + 1}: {e}")
             self.signals.error_occurred.emit(f"OCR error on page {self.page_index + 1}: {str(e)}")
 
     def extract_text_lines(self, data, confidence_threshold):
@@ -145,7 +157,8 @@ class OCRTask(QRunnable):
         for i in range(n_boxes):
             try:
                 conf = float(data['conf'][i])
-            except Exception:
+            except Exception as e:
+                print(f"Error parsing confidence: {e}")
                 conf = -1.0
             word = (data['text'][i] or '').strip()
 
@@ -183,7 +196,7 @@ class OCRManager(QWidget):
         super().__init__()
         self.signals = OCRSignals()
         self.thread_pool = QThreadPool()
-        self.thread_pool.setMaxThreadCount(max(4, (os.cpu_count() - 1) or 2))
+        self.thread_pool.setMaxThreadCount(min(4, (os.cpu_count()) or 2))
         self.total_pages = 0
         self.completed_pages = 0
 
@@ -202,12 +215,15 @@ class OCRManager(QWidget):
             self.thread_pool.start(task)
 
     def on_page_completed(self):
-        self.completed_pages += 1
-        progress = 40 + int((self.completed_pages / self.total_pages) * 60)  # 40-100%
-        self.progress_update.emit(progress, f"Processed page {self.completed_pages}/{self.total_pages}")
+        try:
+            self.completed_pages += 1
+            progress = 40 + int((self.completed_pages / self.total_pages) * 60)  # 40-100%
+            self.progress_update.emit(progress, f"Processed page {self.completed_pages}/{self.total_pages}")
 
-        if self.completed_pages >= self.total_pages:
-            self.processing_complete.emit()
+            if self.completed_pages >= self.total_pages:
+                self.processing_complete.emit()
+        except Exception as e:
+            print(f"Error in on_page_completed: {e}")
 
     def stop_all(self):
         self.thread_pool.clear()
@@ -338,9 +354,14 @@ class OCRApp(QMainWindow):
         # Store confidence threshold value directly to prevent widget issues
         self.confidence_threshold = 0
 
+        self.ocr_start_time = None
+
         # Workers
         self.pdf_worker = None
         self.ocr_manager = OCRManager()
+
+        # Ensure custom_font_family is always initialized
+        self.custom_font_family = "monospace"
 
         # Setup UI
         self.setup_ui()
@@ -364,10 +385,22 @@ class OCRApp(QMainWindow):
         self.status_bar.addPermanentWidget(self.progress_bar)
 
         # Page info label
-        self.page_info_label = QLabel("No document loaded")
-        self.status_bar.addPermanentWidget(self.page_info_label)
-
         self.scale_factor = 1.0
+
+        # Load custom font
+        font_path = resource_path('font/marutham.ttf')
+        if os.path.exists(font_path):
+            font_id = QFontDatabase.addApplicationFont(font_path)
+            if font_id != -1:
+                self.custom_font_family = QFontDatabase.applicationFontFamilies(font_id)[0]
+                print(f"Custom font '{self.custom_font_family}' loaded successfully.")
+            else:
+                self.custom_font_family = "monospace"
+                print(f"Failed to load custom font from {font_path}. Using monospace.")
+        else:
+            self.custom_font_family = "monospace"
+            print(f"Custom font file not found at {font_path}. Using monospace.")
+
 
     def setup_ui(self):
         # Central widget
@@ -466,6 +499,23 @@ class OCRApp(QMainWindow):
         controls_layout.addWidget(lang_label)
         controls_layout.addWidget(self.lang_input)
 
+        # Separator 4
+        separator4 = QFrame()
+        separator4.setFrameShape(QFrame.Shape.VLine)
+        separator4.setFrameShadow(QFrame.Shadow.Sunken)
+        controls_layout.addWidget(separator4)
+
+        # Font size adjustment
+        font_size_label = QLabel("Font Size:")
+        self.font_size_spinbox = QSpinBox()
+        self.font_size_spinbox.setRange(8, 36)
+        self.font_size_spinbox.setValue(12)
+        self.font_size_spinbox.setSuffix(" pt")
+        self.font_size_spinbox.setMinimumWidth(80)
+        self.font_size_spinbox.setToolTip("Adjust font size of the text editor")
+        controls_layout.addWidget(font_size_label)
+        controls_layout.addWidget(self.font_size_spinbox)
+
         controls_layout.addStretch()  # Push navigation to the right
 
         # Separator
@@ -499,7 +549,7 @@ class OCRApp(QMainWindow):
         text_header.setContentsMargins(5, 0, 5, 0)
 
         self.text_label = QLabel("OCR Result (Editable for Proofreading)")
-        self.text_label.setStyleSheet("font-weight: bold; color: #333;")
+        self.text_label.setStyleSheet("font-weight: bold;")
 
         self.edit_status_label = QLabel()
         self.edit_status_label.setStyleSheet("color: #666; font-style: italic;")
@@ -518,6 +568,13 @@ class OCRApp(QMainWindow):
         # NEW: Enable editing and connect text change signal
         self.text_edit.setReadOnly(False)
         self.text_edit.textChanged.connect(self.on_text_edited)
+
+        # Apply custom font
+        font = self.text_edit.font()
+        font.setFamily(self.custom_font_family)
+        font.setPointSize(self.font_size_spinbox.value())
+        self.text_edit.setFont(font)
+
 
         text_layout.addWidget(self.text_edit)
         content_splitter.addWidget(text_widget)
@@ -543,80 +600,110 @@ class OCRApp(QMainWindow):
         self.image_viewer.zoom_out_btn.clicked.connect(self.zoom_out)
         self.image_viewer.fit_btn.clicked.connect(self.fit_view)
 
+        # Connect font size spinbox
+        self.font_size_spinbox.valueChanged.connect(self.on_font_size_changed)
+
+    def on_font_size_changed(self, size):
+        """Update the font size of the text editor"""
+        try:
+            font = self.text_edit.font()
+            font.setPointSize(size)
+            self.text_edit.setFont(font)
+        except Exception as e:
+            print(f"Error setting font size: {e}")
+
     def on_text_edited(self):
         """Called when text is edited in the text area"""
-        if hasattr(self, 'temp_pages') and self.temp_pages:
-            # Mark current page as modified
-            self.text_modified[self.current_page_index] = True
-            self.update_edit_status()
-            self.reset_text_btn.setEnabled(True)
+        try:
+            if hasattr(self, 'temp_pages') and self.temp_pages:
+                # Mark current page as modified
+                self.text_modified[self.current_page_index] = True
+                self.update_edit_status()
+                self.reset_text_btn.setEnabled(True)
+        except Exception as e:
+            print(f"Error in on_text_edited: {e}")
 
     def update_edit_status(self):
         """Update the editing status label"""
-        if self.current_page_index in self.text_modified and self.text_modified[self.current_page_index]:
-            self.edit_status_label.setText("✏️ Modified")
-            self.edit_status_label.setStyleSheet("color: #e67e22; font-style: italic; font-weight: bold;")
-        else:
-            self.edit_status_label.setText("📄 Original")
-            self.edit_status_label.setStyleSheet("color: #27ae60; font-style: italic;")
+        try:
+            if self.current_page_index in self.text_modified and self.text_modified[self.current_page_index]:
+                self.edit_status_label.setText("✏️ Modified")
+                self.edit_status_label.setStyleSheet("color: #e67e22; font-style: italic; font-weight: bold;")
+            else:
+                self.edit_status_label.setText("📄 Original")
+                self.edit_status_label.setStyleSheet("color: #27ae60; font-style: italic;")
+        except Exception as e:
+            print(f"Error in update_edit_status: {e}")
 
     def reset_current_text(self):
         """Reset current page text to original OCR result"""
-        if self.current_page_index in self.text_cache:
-            # Temporarily disconnect signal to avoid triggering text edited
-            self.text_edit.textChanged.disconnect()
-            self.text_edit.setPlainText(self.text_cache[self.current_page_index])
-            self.text_edit.textChanged.connect(self.on_text_edited)
+        try:
+            if self.current_page_index in self.text_cache:
+                # Temporarily disconnect signal to avoid triggering text edited
+                self.text_edit.textChanged.disconnect()
+                self.text_edit.setPlainText(self.text_cache[self.current_page_index])
+                self.text_edit.textChanged.connect(self.on_text_edited)
 
-            # Mark as not modified
-            self.text_modified[self.current_page_index] = False
-            self.update_edit_status()
-            self.reset_text_btn.setEnabled(False)
+                # Mark as not modified
+                self.text_modified[self.current_page_index] = False
+                self.update_edit_status()
+                self.reset_text_btn.setEnabled(False)
+        except Exception as e:
+            print(f"Error in reset_current_text: {e}")
 
     def save_current_page_text(self):
         """Save current text editor content to cache before switching pages or exporting"""
-        if hasattr(self, 'temp_pages') and self.temp_pages and hasattr(self, 'current_page_index'):
-            current_text = self.text_edit.toPlainText()
-            self.text_cache[self.current_page_index] = current_text
+        try:
+            if hasattr(self, 'temp_pages') and self.temp_pages and hasattr(self, 'current_page_index'):
+                current_text = self.text_edit.toPlainText()
+                self.text_cache[self.current_page_index] = current_text
+        except Exception as e:
+            print(f"Error in save_current_page_text: {e}")
 
     def on_confidence_changed(self, value):
         """Update stored confidence threshold when spinbox changes and update display in real-time"""
-        self.confidence_threshold = value
+        try:
+            self.confidence_threshold = value
 
-        # If we have cached OCR data, update the display with new confidence immediately
-        if self.current_page_index in self.ocr_data_cache:
-            self.update_current_page_highlights()
+            # If we have cached OCR data, update the display with new confidence immediately
+            if self.current_page_index in self.ocr_data_cache:
+                self.update_current_page_highlights()
+        except Exception as e:
+            print(f"Error in on_confidence_changed: {e}")
 
     def update_current_page_highlights(self):
         """Update highlights and text on current page with current confidence threshold"""
-        if not self.temp_pages or self.current_page_index >= len(self.temp_pages):
-            return
+        try:
+            if not self.temp_pages or self.current_page_index >= len(self.temp_pages):
+                return
 
-        # Remove existing highlights
-        for item in self.highlight_items:
-            self.scene.removeItem(item)
-        self.highlight_items = []
+            # Remove existing highlights
+            for item in self.highlight_items:
+                self.scene.removeItem(item)
+            self.highlight_items = []
 
-        # Add highlights with current confidence threshold
-        if self.current_page_index in self.ocr_data_cache:
-            self.add_bounding_boxes(self.ocr_data_cache[self.current_page_index], self.confidence_threshold)
-
-        # Only update text if it hasn't been manually edited
-        if (self.current_page_index not in self.text_modified or
-                not self.text_modified[self.current_page_index]):
-
+            # Add highlights with current confidence threshold
             if self.current_page_index in self.ocr_data_cache:
-                data = self.ocr_data_cache[self.current_page_index]
-                text_lines = self.extract_text_lines_from_data(data, self.confidence_threshold)
-                text = '\n'.join(text_lines)
+                self.add_bounding_boxes(self.ocr_data_cache[self.current_page_index], self.confidence_threshold)
 
-                # Temporarily disconnect signal to avoid triggering text edited
-                self.text_edit.textChanged.disconnect()
-                self.text_edit.setPlainText(text)
-                self.text_edit.textChanged.connect(self.on_text_edited)
+            # Only update text if it hasn't been manually edited
+            if (self.current_page_index not in self.text_modified or
+                    not self.text_modified[self.current_page_index]):
 
-                # Update cache with new filtered text
-                self.text_cache[self.current_page_index] = text
+                if self.current_page_index in self.ocr_data_cache:
+                    data = self.ocr_data_cache[self.current_page_index]
+                    text_lines = self.extract_text_lines_from_data(data, self.confidence_threshold)
+                    text = '\n'.join(text_lines)
+
+                    # Temporarily disconnect signal to avoid triggering text edited
+                    self.text_edit.textChanged.disconnect()
+                    self.text_edit.setPlainText(text)
+                    self.text_edit.textChanged.connect(self.on_text_edited)
+
+                    # Update cache with new filtered text
+                    self.text_cache[self.current_page_index] = text
+        except Exception as e:
+            print(f"Error in update_current_page_highlights: {e}")
 
     def extract_text_lines_from_data(self, data, confidence_threshold):
         """Extract text lines from OCR data with given confidence threshold"""
@@ -628,7 +715,8 @@ class OCRApp(QMainWindow):
         for i in range(n_boxes):
             try:
                 conf = float(data['conf'][i])
-            except Exception:
+            except Exception as e:
+                print(f"Error parsing confidence: {e}")
                 conf = -1.0
             word = (data['text'][i] or '').strip()
 
@@ -651,174 +739,225 @@ class OCRApp(QMainWindow):
         return text_lines
 
     def update_page_info(self):
-        if self.temp_pages:
-            total_pages = len(self.temp_pages)
-            current_page = self.current_page_index + 1
-            self.page_info_label.setText(f"Page {current_page} of {total_pages}")
-        else:
-            self.page_info_label.setText("No document loaded")
+        try:
+            if self.temp_pages:
+                total_pages = len(self.temp_pages)
+                current_page = self.current_page_index + 1
+                self.page_info_label.setText(f"Page {current_page} of {total_pages}")
+            else:
+                self.page_info_label.setText("No document loaded")
+        except Exception as e:
+            print(f"Error in update_page_info: {e}")
 
     def closeEvent(self, event):
-        # Stop all workers
-        if self.pdf_worker and self.pdf_worker.isRunning():
-            self.pdf_worker.stop()
-            self.pdf_worker.wait(3000)
+        try:
+            # Stop all workers
+            if self.pdf_worker and self.pdf_worker.isRunning():
+                self.pdf_worker.stop()
+                self.pdf_worker.wait(3000)
 
-        self.ocr_manager.stop_all()
+            self.ocr_manager.stop_all()
 
-        # Clean up temporary files
-        self.clear_temp_pages()
-        super().closeEvent(event)
+            # Clean up temporary files
+            self.clear_temp_pages()
+            super().closeEvent(event)
+        except Exception as e:
+            print(f"Error in closeEvent: {e}")
+            super().closeEvent(event)
 
     def dragEnterEvent(self, event):
-        if event.mimeData().hasUrls():
-            event.acceptProposedAction()
+        try:
+            if event.mimeData().hasUrls():
+                event.acceptProposedAction()
+        except Exception as e:
+            print(f"Error in dragEnterEvent: {e}")
 
     def dropEvent(self, event):
-        for url in event.mimeData().urls():
-            file_path = url.toLocalFile()
-            self.process_file(file_path)
+        try:
+            for url in event.mimeData().urls():
+                file_path = url.toLocalFile()
+                self.process_file(file_path)
+        except Exception as e:
+            print(f"Error in dropEvent: {e}")
 
     def resizeEvent(self, event):
-        super().resizeEvent(event)
-        # Delay fit_view to avoid excessive calls during resize
-        QTimer.singleShot(100, self.fit_view)
+        try:
+            super().resizeEvent(event)
+            # Delay fit_view to avoid excessive calls during resize
+            QTimer.singleShot(100, self.fit_view)
+        except Exception as e:
+            print(f"Error in resizeEvent: {e}")
 
     def open_file(self):
-        file_path, _ = QFileDialog.getOpenFileName(
-            self, "Open File", "",
-            "Images/PDF (*.png *.jpg *.jpeg *.tif *.tiff *.pdf)"
-        )
-        if file_path:
-            self.process_file(file_path)
+        try:
+            file_path, _ = QFileDialog.getOpenFileName(
+                self, "Open File", "",
+                "Images/PDF (*.png *.jpg *.jpeg *.tif *.tiff *.pdf)"
+            )
+            if file_path:
+                self.process_file(file_path)
+        except Exception as e:
+            print(f"Error in open_file: {e}")
 
     def process_file(self, file_path):
-        # Stop any running workers
-        if self.pdf_worker and self.pdf_worker.isRunning():
-            self.pdf_worker.stop()
-            self.pdf_worker.wait(3000)
+        try:
+            # Stop any running workers
+            if self.pdf_worker and self.pdf_worker.isRunning():
+                self.pdf_worker.stop()
+                self.pdf_worker.wait(3000)
 
-        self.ocr_manager.stop_all()
+            self.ocr_manager.stop_all()
 
-        # Clear previous state
-        self.clear_temp_pages()
-        self.scene.clear()
-        self.text_edit.clear()
-        self.current_page_index = 0
-        self.pix_item = None
-        self.highlight_items = []
-        self.ocr_data_cache = {}
-        self.text_cache = {}
-        self.text_modified = {}  # NEW: Clear modification tracking
+            # Clear previous state
+            self.clear_temp_pages()
+            self.scene.clear()
+            self.text_edit.clear()
+            self.current_page_index = 0
+            self.pix_item = None
+            self.highlight_items = []
+            self.ocr_data_cache = {}
+            self.text_cache = {}
+            self.text_modified = {}  # NEW: Clear modification tracking
 
-        # Show progress bar and disable UI
-        self.progress_bar.setVisible(True)
-        self.progress_bar.setValue(0)
-        self.set_ui_enabled(False)
+            # Show progress bar and disable UI
+            self.progress_bar.setVisible(True)
+            self.progress_bar.setValue(0)
+            self.set_ui_enabled(False)
 
-        if file_path.lower().endswith('.pdf'):
-            # Start PDF conversion in separate thread
-            self.status_bar.showMessage("Loading PDF...")
-            self.pdf_worker = PDFConversionWorker(file_path)
-            self.pdf_worker.pages_converted.connect(self.on_pdf_converted)
-            self.pdf_worker.conversion_progress.connect(self.on_progress_update)
-            self.pdf_worker.error_occurred.connect(self.on_processing_error)
-            self.pdf_worker.start()
-        else:
-            # Single image file - process immediately
-            self.temp_pages = [file_path]  # Don't delete original file
-            self.prev_btn.setEnabled(False)
-            self.next_btn.setEnabled(False)
-            self.update_page_info()
-            self.progress_bar.setValue(30)
-            # Display image immediately
-            self.display_image_only(file_path)
-            # Start OCR processing
-            self.start_ocr_processing()
+            if file_path.lower().endswith('.pdf'):
+                # Start PDF conversion in separate thread
+                self.status_bar.showMessage("Loading PDF...")
+                self.pdf_worker = PDFConversionWorker(file_path)
+                self.pdf_worker.pages_converted.connect(self.on_pdf_converted)
+                self.pdf_worker.conversion_progress.connect(self.on_progress_update)
+                self.pdf_worker.error_occurred.connect(self.on_processing_error)
+                self.pdf_worker.start()
+            else:
+                # Single image file - process immediately
+                self.temp_pages = [file_path]  # Don't delete original file
+                self.prev_btn.setEnabled(False)
+                self.next_btn.setEnabled(False)
+                self.update_page_info()
+                self.progress_bar.setValue(30)
+                # Display image immediately
+                self.display_image_only(file_path)
+                # Start OCR processing
+                self.start_ocr_processing()
+        except Exception as e:
+            print(f"Error in process_file: {e}")
 
     def on_pdf_converted(self, temp_paths):
         """Called when PDF conversion is complete"""
-        self.temp_pages = temp_paths
-        if self.temp_pages:
-            self.prev_btn.setEnabled(len(self.temp_pages) > 1)
-            self.next_btn.setEnabled(len(self.temp_pages) > 1)
-            self.update_page_info()
-            # Display first page immediately
-            self.display_image_only(self.temp_pages[0])
-            # Start OCR processing
-            self.start_ocr_processing()
-        else:
-            self.on_processing_error("No pages found in PDF")
+        try:
+            self.temp_pages = temp_paths
+            if self.temp_pages:
+                self.prev_btn.setEnabled(len(self.temp_pages) > 1)
+                self.next_btn.setEnabled(len(self.temp_pages) > 1)
+                self.update_page_info()
+                # Display first page immediately
+                self.display_image_only(self.temp_pages[0])
+                # Start OCR processing
+                self.start_ocr_processing()
+            else:
+                self.on_processing_error("No pages found in PDF")
+        except Exception as e:
+            print(f"Error in on_pdf_converted: {e}")
 
     def start_ocr_processing(self):
         """Start parallel OCR processing"""
-        if not self.temp_pages:
-            return
+        try:
+            if not self.temp_pages:
+                return
 
-        # Get language string from input
-        lang_string = self.lang_input.text().strip()
-        if not lang_string:
-            # Fallback to default if empty
-            lang_string = "tam_cus+eng"
-            self.lang_input.setText(lang_string)
+            self.ocr_start_time = time.time()
 
-        # Use stored confidence threshold (always available)
-        self.ocr_manager.start_processing(self.temp_pages, self.confidence_threshold, lang_string)
+            # Get language string from input
+            lang_string = self.lang_input.text().strip()
+            if not lang_string:
+                # Fallback to default if empty
+                lang_string = "tam_cus+eng"
+                self.lang_input.setText(lang_string)
+
+            # Use stored confidence threshold (always available)
+            self.ocr_manager.start_processing(self.temp_pages, self.confidence_threshold, lang_string)
+        except Exception as e:
+            print(f"Error in start_ocr_processing: {e}")
 
     def reprocess_ocr(self):
         """Reprocess OCR with current confidence threshold"""
-        if not self.temp_pages:
-            return
+        try:
+            if not self.temp_pages:
+                return
 
-        self.save_current_page_text()  # Save current page's text before reprocessing
+            self.save_current_page_text()  # Save current page's text before reprocessing
 
-        # Clear cached data
-        self.ocr_data_cache = {}
-        self.text_cache = {}
-        self.text_modified = {}  # NEW: Clear modification tracking
+            # Clear cached data
+            self.ocr_data_cache = {}
+            self.text_cache = {}
+            self.text_modified = {}  # NEW: Clear modification tracking
 
-        # Show progress and disable UI
-        self.progress_bar.setVisible(True)
-        self.progress_bar.setValue(40)
-        self.set_ui_enabled(False)
+            # Show progress and disable UI
+            self.progress_bar.setVisible(True)
+            self.progress_bar.setValue(40)
+            self.set_ui_enabled(False)
 
-        # Clear current highlights and text
-        for item in self.highlight_items:
-            self.scene.removeItem(item)
-        self.highlight_items = []
-        self.text_edit.setPlainText("Reprocessing OCR...")
+            # Clear current highlights and text
+            for item in self.highlight_items:
+                self.scene.removeItem(item)
+            self.highlight_items = []
+            self.text_edit.setPlainText("Reprocessing OCR...")
 
-        # Start OCR processing
-        self.start_ocr_processing()
+            # Start OCR processing
+            self.start_ocr_processing()
+        except Exception as e:
+            print(f"Error in reprocess_ocr: {e}")
 
     def on_progress_update(self, progress, message):
         """Update progress bar and status"""
-        self.progress_bar.setValue(progress)
-        self.status_bar.showMessage(message)
+        try:
+            self.progress_bar.setValue(progress)
+            self.status_bar.showMessage(message)
+        except Exception as e:
+            print(f"Error in on_progress_update: {e}")
 
     def on_page_processed(self, page_index, text, ocr_data):
-        # Cache the results
-        self.ocr_data_cache[page_index] = ocr_data
-        self.text_cache[page_index] = text
+        try:
+            # Cache the results
+            self.ocr_data_cache[page_index] = ocr_data
+            self.text_cache[page_index] = text
 
-        # If this is the current page, update the display
-        if page_index == self.current_page_index:
-            self.display_current_page_with_cache()
+            # If this is the current page, update the display
+            if page_index == self.current_page_index:
+                self.display_current_page_with_cache()
+        except Exception as e:
+            print(f"Error in on_page_processed: {e}")
 
     def on_processing_complete(self):
-        # Re-enable UI
-        self.set_ui_enabled(True)
-        self.progress_bar.setVisible(False)
-        self.status_bar.showMessage("OCR processing complete")
+        try:
+            # Re-enable UI
+            self.set_ui_enabled(True)
+            self.progress_bar.setVisible(False)
 
-        # Make sure current page is displayed with all data
-        self.display_current_page_with_cache()
+            if self.ocr_start_time:
+                elapsed_time = time.time() - self.ocr_start_time
+                self.status_bar.showMessage(f"OCR processing complete (Time taken: {elapsed_time:.2f} seconds)")
+                self.ocr_start_time = None # Reset timer
+            else:
+                self.status_bar.showMessage("OCR processing complete")
+
+            # Make sure current page is displayed with all data
+            self.display_current_page_with_cache()
+        except Exception as e:
+            print(f"Error in on_processing_complete: {e}")
 
     def on_processing_error(self, error_message):
-        # Re-enable UI
-        self.set_ui_enabled(True)
-        self.progress_bar.setVisible(False)
-        self.status_bar.showMessage(f"Error: {error_message}")
+        try:
+            # Re-enable UI
+            self.set_ui_enabled(True)
+            self.progress_bar.setVisible(False)
+            self.status_bar.showMessage(f"Error: {error_message}")
+        except Exception as e:
+            print(f"Error in on_processing_error: {e}")
 
     def set_ui_enabled(self, enabled):
         """Enable/disable UI elements during processing"""
@@ -835,7 +974,8 @@ class OCRApp(QMainWindow):
             try:
                 self.confidence_spinbox.setEnabled(enabled)
                 # DO NOT reset the value - keep user's setting
-            except RuntimeError:
+            except RuntimeError as e:
+                print(f"Error accessing confidence_spinbox: {e}")
                 # Widget has been deleted, ignore
                 pass
         if hasattr(self, 'lang_input') and self.lang_input is not None:
@@ -843,99 +983,115 @@ class OCRApp(QMainWindow):
 
     def display_image_only(self, image_path):
         """Display just the image without OCR bounding boxes"""
-        self.scene.clear()
-        self.highlight_items = []
+        try:
+            self.scene.clear()
+            self.highlight_items = []
 
-        # Load image into QPixmap
-        pixmap = QPixmap(image_path)
-        self.pix_item = QGraphicsPixmapItem(pixmap)
-        self.pix_item.setZValue(0)
-        self.scene.addItem(self.pix_item)
+            # Load image into QPixmap
+            pixmap = QPixmap(image_path)
+            self.pix_item = QGraphicsPixmapItem(pixmap)
+            self.pix_item.setZValue(0)
+            self.scene.addItem(self.pix_item)
 
-        # Fit view to image initially
-        self.fit_view()
+            # Fit view to image initially
+            self.fit_view()
+        except Exception as e:
+            print(f"Error in display_image_only: {e}")
 
     def display_current_page_with_cache(self):
         """Display current page with cached OCR data if available"""
-        if not self.temp_pages or self.current_page_index >= len(self.temp_pages):
-            return
+        try:
+            if not self.temp_pages or self.current_page_index >= len(self.temp_pages):
+                return
 
-        image_path = self.temp_pages[self.current_page_index]
+            image_path = self.temp_pages[self.current_page_index]
 
-        # Clear and setup image
-        self.scene.clear()
-        self.highlight_items = []
+            # Clear and setup image
+            self.scene.clear()
+            self.highlight_items = []
 
-        # Load image
-        pixmap = QPixmap(image_path)
-        self.pix_item = QGraphicsPixmapItem(pixmap)
-        self.pix_item.setZValue(0)
-        self.scene.addItem(self.pix_item)
+            # Load image
+            pixmap = QPixmap(image_path)
+            self.pix_item = QGraphicsPixmapItem(pixmap)
+            self.pix_item.setZValue(0)
+            self.scene.addItem(self.pix_item)
 
-        # Add bounding boxes if OCR data is available
-        if self.current_page_index in self.ocr_data_cache:
-            # Use stored confidence threshold (always available)
-            self.add_bounding_boxes(self.ocr_data_cache[self.current_page_index], self.confidence_threshold)
+            # Add bounding boxes if OCR data is available
+            if self.current_page_index in self.ocr_data_cache:
+                # Use stored confidence threshold (always available)
+                self.add_bounding_boxes(self.ocr_data_cache[self.current_page_index], self.confidence_threshold)
 
-        # Set text based on cache
-        if self.current_page_index in self.text_cache:
-            # Use cached text (which includes user edits if saved)
-            self.text_edit.textChanged.disconnect()
-            self.text_edit.setPlainText(self.text_cache[self.current_page_index])
-            self.text_edit.textChanged.connect(self.on_text_edited)
-        else:
-            # No cache yet
-            self.text_edit.setPlainText("Processing OCR...")
+            # Set text based on cache
+            if self.current_page_index in self.text_cache:
+                # Use cached text (which includes user edits if saved)
+                self.text_edit.textChanged.disconnect()
+                self.text_edit.setPlainText(self.text_cache[self.current_page_index])
+                self.text_edit.textChanged.connect(self.on_text_edited)
+            else:
+                # No cache yet
+                self.text_edit.setPlainText("Processing OCR...")
 
-        # Update UI state
-        self.update_edit_status()
-        self.reset_text_btn.setEnabled(
-            self.current_page_index in self.text_modified and
-            self.text_modified[self.current_page_index]
-        )
+            # Update UI state
+            self.update_edit_status()
+            self.reset_text_btn.setEnabled(
+                self.current_page_index in self.text_modified and
+                self.text_modified[self.current_page_index]
+            )
 
-        # Update page info
-        self.update_page_info()
+            # Update page info
+            self.update_page_info()
 
-        # Fit view
-        self.fit_view()
+            # Fit view
+            self.fit_view()
+        except Exception as e:
+            print(f"Error in display_current_page_with_cache: {e}")
 
     def add_bounding_boxes(self, data, confidence_threshold):
         """Add bounding boxes from OCR data with confidence filtering"""
-        pen = QPen(QColor(255, 0, 0))  # red outline
-        pen.setWidth(2)
-        brush = QBrush(QColor(255, 255, 0, 60))  # semi-transparent yellow fill
+        try:
+            pen = QPen(QColor(255, 0, 0))  # red outline
+            pen.setWidth(2)
+            brush = QBrush(QColor(255, 255, 0, 60))  # semi-transparent yellow fill
 
-        n_boxes = len(data.get('text', []))
-        for i in range(n_boxes):
-            try:
-                conf = float(data['conf'][i])
-            except Exception:
-                conf = -1.0
-            word = (data['text'][i] or '').strip()
+            n_boxes = len(data.get('text', []))
+            for i in range(n_boxes):
+                try:
+                    conf = float(data['conf'][i])
+                except Exception as e:
+                    print(f"Error parsing confidence for bounding box: {e}")
+                    conf = -1.0
+                word = (data['text'][i] or '').strip()
 
-            if conf > confidence_threshold and word:
-                x = int(data['left'][i])
-                y = int(data['top'][i])
-                w = int(data['width'][i])
-                h = int(data['height'][i])
-                rect = QGraphicsRectItem(QRectF(x, y, w, h))
-                rect.setPen(pen)
-                rect.setBrush(brush)
-                rect.setZValue(1)
-                rect.setToolTip(f"{word} (conf: {conf:.0f}%)")
-                rect.setVisible(self.highlights_visible)
-                self.scene.addItem(rect)
-                self.highlight_items.append(rect)
+                if conf > confidence_threshold and word:
+                    x = int(data['left'][i])
+                    y = int(data['top'][i])
+                    w = int(data['width'][i])
+                    h = int(data['height'][i])
+                    rect = QGraphicsRectItem(QRectF(x, y, w, h))
+                    rect.setPen(pen)
+                    rect.setBrush(brush)
+                    rect.setZValue(1)
+                    rect.setToolTip(f"{word} (conf: {conf:.0f}%)")
+                    rect.setVisible(self.highlights_visible)
+                    self.scene.addItem(rect)
+                    self.highlight_items.append(rect)
+        except Exception as e:
+            print(f"Error in add_bounding_boxes: {e}")
 
     def fit_view(self):
-        if self.pix_item is not None:
-            self.graphics_view.resetTransform()
-            self.graphics_view.fitInView(self.pix_item, Qt.AspectRatioMode.KeepAspectRatio)
-            self.scale_factor = 1.0
+        try:
+            if self.pix_item is not None:
+                self.graphics_view.resetTransform()
+                self.graphics_view.fitInView(self.pix_item, Qt.AspectRatioMode.KeepAspectRatio)
+                self.scale_factor = 1.0
+        except Exception as e:
+            print(f"Error in fit_view: {e}")
 
     def zoom_in(self):
-        self.scale_view(1.25)
+        try:
+            self.scale_view(1.25)
+        except Exception as e:
+            print(f"Error in zoom_in: {e}")
 
     def zoom_out(self):
         self.scale_view(0.8)
@@ -967,7 +1123,8 @@ class OCRApp(QMainWindow):
             if tempfile.gettempdir() in p:
                 try:
                     os.remove(p)
-                except Exception:
+                except Exception as e:
+                    print(f"Error removing temp file: {e}")
                     pass
         self.temp_pages = []
 
@@ -988,14 +1145,23 @@ class OCRApp(QMainWindow):
                 self, "Save File", "output.txt", "Text Files (*.txt)"
             )
             if file_path:
-                with open(file_path, 'w', encoding='utf-8') as f:
-                    f.write(text)
+                try:
+                    with open(file_path, 'w', encoding='utf-8') as f:
+                        f.write(text)
 
-                self.status_bar.showMessage(f"Text exported to {file_path}")
+                    self.status_bar.showMessage(f"Text exported to {file_path}")
+                except (IOError, OSError) as e:
+                    print(f"Error exporting text: {e}")
+                    self.status_bar.showMessage(f"Error exporting text: {e}")
 
 
 if __name__ == '__main__':
-    app = QApplication(sys.argv)
-    window = OCRApp()
-    window.show()
-    sys.exit(app.exec())
+    try:
+        app = QApplication(sys.argv)
+        window = OCRApp()
+        window.show()
+        sys.exit(app.exec())
+    except Exception as e:
+        print(f"An unexpected error occurred: {e}")
+        logging.basicConfig(filename='app_error.log', level=logging.DEBUG)
+        logging.exception("Caught exception at top level")
