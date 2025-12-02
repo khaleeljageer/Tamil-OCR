@@ -1,2 +1,2 @@
 tessdata/*.traineddata filter=lfs diff=lfs merge=lfs -text
-release/Tamil-OCR filter=lfs diff=lfs merge=lfs -text
+release/Tamil-OCR_linux filter=lfs diff=lfs merge=lfs -text
