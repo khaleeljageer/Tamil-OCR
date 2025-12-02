@@ -1,7 +1,4 @@
 PyQt6
+Pillow
 pytesseract
 pdf2image
-Pillow
-PyMuPDF
-fitz
-ocr_tamil
