@@ -20,13 +20,13 @@ def resource_path(relative_path):
     return os.path.join(base_path, relative_path)
 
 
-from PyQt6.QtCore import Qt, QRectF, QThread, pyqtSignal, QTimer, QThreadPool, QRunnable
-from PyQt6.QtGui import QPixmap, QPen, QColor, QBrush, QPainter, QFontDatabase
+from PyQt6.QtCore import Qt, QRectF, QThread, pyqtSignal, QTimer, QThreadPool, QRunnable, QUrl
+from PyQt6.QtGui import QPixmap, QPen, QColor, QBrush, QPainter, QFontDatabase, QDesktopServices, QAction, QFont
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout,
     QLabel, QPushButton, QFileDialog, QTextEdit, QHBoxLayout, QSplitter,
     QGraphicsView, QGraphicsScene, QGraphicsPixmapItem, QGraphicsRectItem,
-    QCheckBox, QProgressBar, QStatusBar, QSpinBox, QFrame, QLineEdit
+    QCheckBox, QProgressBar, QStatusBar, QSpinBox, QFrame, QLineEdit, QDialog, QToolBar, QSizePolicy
 )
 from pdf2image import convert_from_path
 from PIL import Image
@@ -345,6 +345,69 @@ class ImageViewerWidget(QWidget):
         self.position_zoom_controls()
 
 
+
+class AboutDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("About Tamil OCR")
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(15, 15, 15, 15)
+        layout.setSpacing(10)
+
+        # Author
+        author_label = QLabel("<b>Author:</b> Khaleel Jageer")
+        author_label.setTextFormat(Qt.TextFormat.RichText)
+        layout.addWidget(author_label)
+
+        # Email
+        email_label = QLabel("<b>Email:</b> jskcse4@gmail.com")
+        email_label.setTextFormat(Qt.TextFormat.RichText)
+        layout.addWidget(email_label)
+
+        org_label = QLabel("<b>Organization:</b> Kaniyam Foundation")
+        org_label.setTextFormat(Qt.TextFormat.RichText)
+        layout.addWidget(org_label)
+
+        # Version
+        version_label = QLabel("<b>Version:</b> 1.0.0")
+        version_label.setTextFormat(Qt.TextFormat.RichText)
+        layout.addWidget(version_label)
+
+        # Project Repo
+        repo_label = QLabel('<b>Project Repository:</b> <a href="https://github.com/khaleeljageer/Tamil-OCR">https://github.com/khaleeljageer/Tamil-OCR</a>')
+        repo_label.setOpenExternalLinks(True)
+        repo_label.setTextFormat(Qt.TextFormat.RichText)
+        layout.addWidget(repo_label)
+
+        # Thanks
+        thanks_label = QLabel("""
+            <br>
+            <b>Thanks to:</b><br>
+            Tesseract OCR (<a href="https://tesseract-ocr.github.io/">Apache 2.0 License</a>), <br>
+            PyQt6 (<a href="https://www.riverbankcomputing.com/software/pyqt/license/">GPLv3 License</a>), <br>
+            pdf2image (<a href="https://github.com/Belval/pdf2image/blob/master/LICENSE">MIT License</a>), <br>
+            Pillow (<a href="https://github.com/python-pillow/Pillow/blob/master/LICENSE">HPX License</a>).<br><br>
+            This project is licensed under <a href="https://www.gnu.org/licenses/gpl-3.0.en.html">GPL v3</a>.
+        """)
+        thanks_label.setOpenExternalLinks(True)
+        thanks_label.setTextFormat(Qt.TextFormat.RichText)
+        layout.addWidget(thanks_label)
+
+        # Report Issue Button
+        issue_button = QPushButton("Report Issue")
+        issue_button.clicked.connect(self.open_issue_page)
+        layout.addWidget(issue_button)
+
+        # Close button
+        close_button = QPushButton("Close")
+        close_button.clicked.connect(self.accept)
+        layout.addWidget(close_button)
+
+    def open_issue_page(self):
+        url = QUrl("https://github.com/khaleeljageer/Tamil-OCR/issues/new/choose")
+        QDesktopServices.openUrl(url)
+
+
 class OCRApp(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -393,7 +456,9 @@ class OCRApp(QMainWindow):
         self.progress_bar.setVisible(False)
         self.status_bar.addPermanentWidget(self.progress_bar)
 
-        # Page info label
+        self.page_info_label = QLabel("No document loaded")
+        self.status_bar.addPermanentWidget(self.page_info_label)
+        
         self.scale_factor = 1.0
 
         # Load custom font
@@ -412,205 +477,166 @@ class OCRApp(QMainWindow):
 
 
     def setup_ui(self):
-        # Central widget
+        # Central widget and layout
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
-
-        # Main layout
         main_layout = QVBoxLayout(central_widget)
         main_layout.setContentsMargins(10, 10, 10, 10)
         main_layout.setSpacing(10)
 
-        # Control buttons frame
-        controls_frame = QFrame()
-        controls_frame.setFrameStyle(QFrame.Shape.StyledPanel)
-        controls_frame.setMaximumHeight(60)
-        controls_layout = QHBoxLayout(controls_frame)
-        controls_layout.setContentsMargins(10, 10, 10, 10)
-        controls_layout.setSpacing(8)
+        # Create Menu Bar
+        self.menu_bar = self.menuBar()
 
-        # File operations
-        self.open_btn = QPushButton("Open Image/PDF")
-        self.open_btn.setMinimumWidth(120)
-        self.export_btn = QPushButton("Export Text")
-        self.export_btn.setMinimumWidth(100)
-        self.reprocess_btn = QPushButton("Reprocess OCR")
-        self.reprocess_btn.setMinimumWidth(120)
-        self.reprocess_btn.setToolTip("Reprocess OCR with current confidence threshold")
-        self.reprocess_btn.setEnabled(False)
+        # File Menu
+        file_menu = self.menu_bar.addMenu("&File")
+        open_action = QAction("&Open Image/PDF", self)
+        open_action.triggered.connect(self.open_file)
+        export_action = QAction("&Export Text", self)
+        export_action.triggered.connect(self.export_text)
+        exit_action = QAction("&Exit", self)
+        exit_action.triggered.connect(self.close)
+        file_menu.addAction(open_action)
+        file_menu.addAction(export_action)
+        file_menu.addSeparator()
+        file_menu.addAction(exit_action)
 
-        # NEW: Reset text button
+        # View Menu
+        view_menu = self.menu_bar.addMenu("&View")
+        self.toggle_highlights_action = QAction("Show &Highlights", self, checkable=True)
+        self.toggle_highlights_action.setChecked(True)
+        self.toggle_highlights_action.triggered.connect(self.toggle_highlight_visibility)
+        view_menu.addAction(self.toggle_highlights_action)
+
+        # Help Menu
+        help_menu = self.menu_bar.addMenu("&Help")
+        about_action = QAction("&About", self)
+        about_action.triggered.connect(self.show_about_dialog)
+        help_menu.addAction(about_action)
+
+        # Create Toolbar for controls
+        toolbar = QToolBar("Controls")
+        self.addToolBar(toolbar)
+
+        # --- Toolbar Widgets ---
+        self.rerun_ocr_btn = QPushButton("Re-Run OCR")
+        self.rerun_ocr_btn.setToolTip("Re-Run OCR with current confidence threshold")
+        self.rerun_ocr_btn.setEnabled(False)
+        self.rerun_ocr_btn.clicked.connect(self.rerun_ocr)
+        toolbar.addWidget(self.rerun_ocr_btn)
+
         self.reset_text_btn = QPushButton("Reset Text")
-        self.reset_text_btn.setMinimumWidth(100)
         self.reset_text_btn.setToolTip("Reset current page text to original OCR result")
         self.reset_text_btn.setEnabled(False)
+        self.reset_text_btn.clicked.connect(self.reset_current_text)
+        toolbar.addWidget(self.reset_text_btn)
 
-        # Checkbox
-        self.toggle_highlights = QCheckBox("Show Highlights")
-        self.toggle_highlights.setChecked(True)
-        self.toggle_highlights.setMinimumWidth(100)
+        # Add spacing around separator
+        toolbar.addWidget(self.create_spacer())
+        toolbar.addSeparator()
+        toolbar.addWidget(self.create_spacer())
 
-        # Confidence threshold setting
-        conf_label = QLabel("Confidence Threshold:")
+        toolbar.addWidget(QLabel("Confidence:"))
         self.confidence_spinbox = QSpinBox()
         self.confidence_spinbox.setRange(0, 100)
         self.confidence_spinbox.setValue(self.confidence_threshold)
         self.confidence_spinbox.setSuffix("%")
-        self.confidence_spinbox.setMinimumWidth(80)
         self.confidence_spinbox.setToolTip("Minimum confidence level for OCR text recognition (0-100%)")
-
-        # Connect confidence change signal for real-time updates
         self.confidence_spinbox.valueChanged.connect(self.on_confidence_changed)
+        toolbar.addWidget(self.confidence_spinbox)
 
-        # Language input
-        lang_label = QLabel("Tesseract Langs:")
+        # Add spacing around separator
+        toolbar.addWidget(self.create_spacer())
+        toolbar.addSeparator()
+        toolbar.addWidget(self.create_spacer())
+
+        toolbar.addWidget(QLabel("Langs:"))
         self.lang_input = QLineEdit("tam_cus+eng")
-        self.lang_input.setFixedWidth(120)
         self.lang_input.setToolTip("Enter language codes separated by '+' (e.g., tam+eng)")
+        toolbar.addWidget(self.lang_input)
 
-        # Navigation
-        self.prev_btn = QPushButton("← Prev Page")
-        self.prev_btn.setMinimumWidth(100)
-        self.prev_btn.setEnabled(False)
-        self.next_btn = QPushButton("Next Page →")
-        self.next_btn.setMinimumWidth(100)
-        self.next_btn.setEnabled(False)
+        # Add spacing around separator
+        toolbar.addWidget(self.create_spacer())
+        toolbar.addSeparator()
+        toolbar.addWidget(self.create_spacer())
 
-        # Add widgets to controls layout
-        controls_layout.addWidget(self.open_btn)
-        controls_layout.addWidget(self.export_btn)
-        controls_layout.addWidget(self.reprocess_btn)
-        controls_layout.addWidget(self.reset_text_btn)  # NEW
-
-        # Separator
-        separator1 = QFrame()
-        separator1.setFrameShape(QFrame.Shape.VLine)
-        separator1.setFrameShadow(QFrame.Shadow.Sunken)
-        controls_layout.addWidget(separator1)
-
-        controls_layout.addWidget(self.toggle_highlights)
-
-        # Separator
-        separator2 = QFrame()
-        separator2.setFrameShape(QFrame.Shape.VLine)
-        separator2.setFrameShadow(QFrame.Shadow.Sunken)
-        controls_layout.addWidget(separator2)
-
-        controls_layout.addWidget(conf_label)
-        controls_layout.addWidget(self.confidence_spinbox)
-
-        # Separator
-        separator3 = QFrame()
-        separator3.setFrameShape(QFrame.Shape.VLine)
-        separator3.setFrameShadow(QFrame.Shadow.Sunken)
-
-        controls_layout.addWidget(separator3)
-        controls_layout.addWidget(lang_label)
-        controls_layout.addWidget(self.lang_input)
-
-        # Separator 4
-        separator4 = QFrame()
-        separator4.setFrameShape(QFrame.Shape.VLine)
-        separator4.setFrameShadow(QFrame.Shadow.Sunken)
-        controls_layout.addWidget(separator4)
-
-        # Font size adjustment
-        font_size_label = QLabel("Font Size:")
+        toolbar.addWidget(QLabel("Font Size:"))
         self.font_size_spinbox = QSpinBox()
         self.font_size_spinbox.setRange(8, 36)
         self.font_size_spinbox.setValue(12)
         self.font_size_spinbox.setSuffix(" pt")
-        self.font_size_spinbox.setMinimumWidth(80)
         self.font_size_spinbox.setToolTip("Adjust font size of the text editor")
-        controls_layout.addWidget(font_size_label)
-        controls_layout.addWidget(self.font_size_spinbox)
+        self.font_size_spinbox.valueChanged.connect(self.on_font_size_changed)
+        toolbar.addWidget(self.font_size_spinbox)
 
-        controls_layout.addStretch()  # Push navigation to the right
+        # Spacer to push navigation to the right
+        spacer = QWidget()
+        spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        toolbar.addWidget(spacer)
 
-        # Separator
-        separator4 = QFrame()
-        separator4.setFrameShape(QFrame.Shape.VLine)
-        separator4.setFrameShadow(QFrame.Shadow.Sunken)
-        controls_layout.addWidget(separator4)
+        self.prev_btn = QPushButton("← Prev Page")
+        self.prev_btn.setEnabled(False)
+        self.prev_btn.clicked.connect(self.prev_page)
+        toolbar.addWidget(self.prev_btn)
 
-        controls_layout.addWidget(self.prev_btn)
-        controls_layout.addWidget(self.next_btn)
+        self.next_btn = QPushButton("Next Page →")
+        self.next_btn.setEnabled(False)
+        self.next_btn.clicked.connect(self.next_page)
+        toolbar.addWidget(self.next_btn)
 
-        # Content area - Splitter for image preview + text
+
+        # --- Main Content Area ---
         content_splitter = QSplitter(Qt.Orientation.Horizontal)
         content_splitter.setChildrenCollapsible(False)
 
-        # Graphics view with floating zoom controls
         self.scene = QGraphicsScene()
         self.image_viewer = ImageViewerWidget(self.scene)
         self.image_viewer.setMinimumSize(400, 300)
-        self.graphics_view = self.image_viewer.graphics_view  # Reference for compatibility
+        self.graphics_view = self.image_viewer.graphics_view
         content_splitter.addWidget(self.image_viewer)
 
-        # Text output with editing label
         text_widget = QWidget()
         text_layout = QVBoxLayout(text_widget)
         text_layout.setContentsMargins(0, 0, 0, 0)
         text_layout.setSpacing(5)
 
-        # NEW: Text area label and editing status
         text_header = QHBoxLayout()
         text_header.setContentsMargins(5, 0, 5, 0)
-
         self.text_label = QLabel("OCR Result (Editable for Proofreading)")
         self.text_label.setStyleSheet("font-weight: bold;")
-
         self.edit_status_label = QLabel()
         self.edit_status_label.setStyleSheet("color: #666; font-style: italic;")
-
         text_header.addWidget(self.text_label)
         text_header.addStretch()
         text_header.addWidget(self.edit_status_label)
-
         text_layout.addLayout(text_header)
 
-        # Text edit area - now explicitly editable
         self.text_edit = QTextEdit()
-        self.text_edit.setPlaceholderText(
-            "OCR output will appear here...\nYou can edit this text for proofreading purposes.")
-        self.text_edit.setMinimumSize(300, 300)
-        # NEW: Enable editing and connect text change signal
+        self.text_edit.setPlaceholderText("OCR output will appear here...\nYou can edit this text for proofreading purposes.")
         self.text_edit.setReadOnly(False)
         self.text_edit.textChanged.connect(self.on_text_edited)
-
-        # Apply custom font
         font = self.text_edit.font()
         font.setFamily(self.custom_font_family)
         font.setPointSize(self.font_size_spinbox.value())
         self.text_edit.setFont(font)
-
-
         text_layout.addWidget(self.text_edit)
         content_splitter.addWidget(text_widget)
 
-        # Set splitter proportions (60% image, 40% text)
         content_splitter.setSizes([720, 480])
+        main_layout.addWidget(content_splitter, 1)
 
-        # Add all components to main layout
-        main_layout.addWidget(controls_frame)
-        main_layout.addWidget(content_splitter, 1)  # Give content area most space
-
-        # Connect button signals
-        self.open_btn.clicked.connect(self.open_file)
-        self.export_btn.clicked.connect(self.export_text)
-        self.reprocess_btn.clicked.connect(self.reprocess_ocr)
-        self.reset_text_btn.clicked.connect(self.reset_current_text)  # NEW
-        self.prev_btn.clicked.connect(self.prev_page)
-        self.next_btn.clicked.connect(self.next_page)
-        self.toggle_highlights.stateChanged.connect(self.toggle_highlight_visibility)
-
-        # Connect zoom controls
+        # Connect signals for non-menu/toolbar items
         self.image_viewer.zoom_in_btn.clicked.connect(self.zoom_in)
         self.image_viewer.zoom_out_btn.clicked.connect(self.zoom_out)
         self.image_viewer.fit_btn.clicked.connect(self.fit_view)
 
-        # Connect font size spinbox
-        self.font_size_spinbox.valueChanged.connect(self.on_font_size_changed)
+    def create_spacer(self, width=5):
+        spacer = QWidget()
+        spacer.setFixedWidth(width)
+        return spacer
+
+    def show_about_dialog(self):
+        dialog = AboutDialog(self)
+        dialog.exec()
 
     def on_font_size_changed(self, size):
         """Update the font size of the text editor"""
@@ -892,8 +918,8 @@ class OCRApp(QMainWindow):
         except Exception as e:
             print(f"Error in start_ocr_processing: {e}")
 
-    def reprocess_ocr(self):
-        """Reprocess OCR with current confidence threshold"""
+    def rerun_ocr(self):
+        """Re-run OCR with current confidence threshold"""
         try:
             if not self.temp_pages:
                 return
@@ -914,12 +940,12 @@ class OCRApp(QMainWindow):
             for item in self.highlight_items:
                 self.scene.removeItem(item)
             self.highlight_items = []
-            self.text_edit.setPlainText("Reprocessing OCR...")
+            self.text_edit.setPlainText("Re-running OCR...")
 
             # Start OCR processing
             self.start_ocr_processing()
         except Exception as e:
-            print(f"Error in reprocess_ocr: {e}")
+            print(f"Error in rerun_ocr: {e}")
 
     def on_progress_update(self, progress, message):
         """Update progress bar and status"""
@@ -975,8 +1001,8 @@ class OCRApp(QMainWindow):
             self.open_btn.setEnabled(enabled)
         if hasattr(self, 'export_btn') and self.export_btn is not None:
             self.export_btn.setEnabled(enabled)
-        if hasattr(self, 'reprocess_btn') and self.reprocess_btn is not None:
-            self.reprocess_btn.setEnabled(enabled and bool(self.temp_pages))
+        if hasattr(self, 'rerun_ocr_btn') and self.rerun_ocr_btn is not None:
+            self.rerun_ocr_btn.setEnabled(enabled and bool(self.temp_pages))
         if hasattr(self, 'reset_text_btn') and self.reset_text_btn is not None:  # NEW
             self.reset_text_btn.setEnabled(enabled and bool(self.temp_pages))
         if hasattr(self, 'confidence_spinbox') and self.confidence_spinbox is not None:
@@ -1110,7 +1136,7 @@ class OCRApp(QMainWindow):
         self.graphics_view.scale(factor, factor)
 
     def toggle_highlight_visibility(self):
-        self.highlights_visible = self.toggle_highlights.isChecked()
+        self.highlights_visible = self.toggle_highlights_action.isChecked()
         for rect in self.highlight_items:
             rect.setVisible(self.highlights_visible)
 
