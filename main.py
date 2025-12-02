@@ -1,10 +1,10 @@
+import logging
 import os
+import platform
+import pytesseract
 import sys
 import tempfile
-import logging
 import time
-
-import pytesseract
 
 
 # Helper function to get resource paths for PyInstaller
@@ -35,7 +35,10 @@ from PIL import Image
 Image.MAX_IMAGE_PIXELS = None  # Remove the limit entirely
 tessdata_dir = resource_path('tessdata')
 os.environ['TESSDATA_PREFIX'] = tessdata_dir
-pytesseract.pytesseract.tesseract_cmd = resource_path('tesseract/tesseract.AppImage')
+if platform.system() == 'Windows':
+    pytesseract.pytesseract.tesseract_cmd = resource_path(os.path.join("binary", "windows", "tesseract", "tesseract.exe"))
+elif platform.system() == 'Linux':
+    pytesseract.pytesseract.tesseract_cmd = resource_path(os.path.join("binary", "linux", "tesseract", "tesseract.AppImage"))
 
 
 class PDFConversionWorker(QThread):
@@ -56,13 +59,19 @@ class PDFConversionWorker(QThread):
             # Start with lower DPI and increase if needed
             try:
                 # Try with standard DPI first
-                pages = convert_from_path(self.pdf_path, dpi=300)
+                if platform.system() == 'Windows':
+                    pages = convert_from_path(self.pdf_path, dpi=300, poppler_path=os.path.join("binary", "windows", "poppler", "Library", "bin"))
+                elif platform.system() == 'Linux':
+                    pages = convert_from_path(self.pdf_path, dpi=300)
             except Exception as error:
                 print(f"Error converting PDF with standard DPI: {error}")
                 if "exceeds limit" in str(error) or "decompression bomb" in str(error):
                     # If size limit exceeded, try with lower DPI
                     self.conversion_progress.emit(15, "Large PDF detected, using lower DPI...")
-                    pages = convert_from_path(self.pdf_path, dpi=150)
+                    if platform.system() == 'Windows':
+                        pages = convert_from_path(self.pdf_path, dpi=150, poppler_path=os.path.join("binary", "windows", "poppler", "bin"))
+                    elif platform.system() == 'Linux':
+                        pages = convert_from_path(self.pdf_path, dpi=150)
                 else:
                     raise error
 
@@ -388,7 +397,7 @@ class OCRApp(QMainWindow):
         self.scale_factor = 1.0
 
         # Load custom font
-        font_path = resource_path('font/marutham.ttf')
+        font_path = resource_path(os.path.join("font", "marutham.ttf"))
         if os.path.exists(font_path):
             font_id = QFontDatabase.addApplicationFont(font_path)
             if font_id != -1:
