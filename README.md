@@ -79,7 +79,7 @@ pyinstaller --name "Tamil-OCR" \
             --add-data "font/marutham.ttf:font" \
             --add-data "tessdata/eng.traineddata:tessdata" \
             --add-data "tessdata/tam_cus.traineddata:tessdata" \
-            --add-binary "tesseract/tesseract.AppImage:tesseract" \
+            --add-binary "binary/linux/tesseract/tesseract.AppImage:binary/linux/tesseract" \
             main.py
 ```
 
