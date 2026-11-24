@@ -1776,7 +1776,11 @@ if __name__ == '__main__':
     app.setApplicationName("Tamil-OCR")
     log_file = setup_logging()
     install_exception_hook(log_file)
-    logger.info("Starting Tamil OCR (log file: %s)", log_file)
+    logger.info("Starting Tamil OCR %s (log file: %s)", APP_VERSION, log_file)
     window = OCRApp()
     window.show()
+    # "Tamil-OCR <file>" opens an image, PDF or session at startup (e.g. "Open with…")
+    startup_files = [a for a in app.arguments()[1:] if not a.startswith('-')]
+    if startup_files:
+        QTimer.singleShot(0, lambda: window.open_path(os.path.abspath(startup_files[0])))
     sys.exit(app.exec())
