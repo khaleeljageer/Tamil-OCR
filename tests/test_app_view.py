@@ -1,8 +1,9 @@
 """Page view, navigation, keyboard shortcuts, font and About dialog."""
 import pytest
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import QPoint, QPointF, Qt
+from PyQt6.QtGui import QWheelEvent
 from PyQt6.QtTest import QTest
-from PyQt6.QtWidgets import QFileDialog, QLabel
+from PyQt6.QtWidgets import QApplication, QFileDialog, QLabel
 
 import main
 from conftest import HAVE_POPPLER, open_with_fake_ocr, settle
@@ -28,9 +29,41 @@ def test_editor_uses_bundled_tamil_font(window):
     """Bug 9: the font was loaded after the editor was created."""
     assert window.custom_font_family != "monospace"
     assert window.text_edit.font().family() == window.custom_font_family
-    window.font_size_spinbox.setValue(20)
+    window.font_size_picker.set_font_size(20)
     assert window.text_edit.font().family() == window.custom_font_family
     assert window.text_edit.font().pointSize() == 20
+
+
+def test_font_size_picker_never_takes_focus(qapp, window):
+    """Clicking the font size control must not steal the keyboard from the editor."""
+    window.text_edit.setFocus()
+    qapp.processEvents()
+    picker = window.font_size_picker
+    assert picker.focusPolicy() == Qt.FocusPolicy.NoFocus
+    QTest.mouseClick(picker, Qt.MouseButton.LeftButton)
+    qapp.processEvents()
+    picker.hidePopup()
+    picker.setCurrentIndex(picker.findData(16))  # as choosing from the list does
+    qapp.processEvents()
+    assert window.text_edit.font().pointSize() == 16
+    assert QApplication.focusWidget() is window.text_edit
+
+
+def test_font_size_picker_ignores_mouse_wheel(window):
+    picker = window.font_size_picker
+    before = picker.font_size()
+    wheel = QWheelEvent(QPointF(5, 5), QPointF(5, 5), QPoint(0, 0), QPoint(0, -120),
+                        Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier,
+                        Qt.ScrollPhase.NoScrollPhase, False)
+    QApplication.sendEvent(picker, wheel)
+    assert picker.font_size() == before
+
+
+def test_font_size_picker_snaps_to_nearest_size(window):
+    window.font_size_picker.set_font_size(13)
+    assert window.font_size_picker.font_size() == 12
+    window.font_size_picker.set_font_size(100)
+    assert window.font_size_picker.font_size() == 36
 
 
 def test_about_dialog_shows_app_version(qapp):

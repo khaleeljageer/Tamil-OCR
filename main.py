@@ -79,7 +79,7 @@ from PyQt6.QtWidgets import (
     QLabel, QPushButton, QFileDialog, QTextEdit, QHBoxLayout, QSplitter,
     QGraphicsView, QGraphicsScene, QGraphicsPixmapItem, QGraphicsRectItem,
     QProgressBar, QStatusBar, QSpinBox, QFrame, QDialog, QToolBar, QSizePolicy,
-    QMessageBox, QToolButton, QMenu
+    QMessageBox, QToolButton, QMenu, QComboBox
 )
 from pdf2image import convert_from_path, pdfinfo_from_path
 from PIL import Image
@@ -248,6 +248,33 @@ class StayOpenMenu(QMenu):
             action.trigger()
             return
         super().mouseReleaseEvent(event)
+
+
+class FontSizePicker(QComboBox):
+    """Drop-down of editor font sizes that never takes keyboard focus, so arrow and
+    Page keys keep going to the editor or page view, and that ignores the mouse wheel
+    so scrolling past it doesn't change the size."""
+    SIZES = (8, 9, 10, 11, 12, 14, 16, 18, 20, 24, 28, 32, 36)
+    sizeChanged = pyqtSignal(int)
+
+    def __init__(self, size=12, parent=None):
+        super().__init__(parent)
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        for value in self.SIZES:
+            self.addItem(f"{value} pt", value)
+        self.set_font_size(size)
+        self.currentIndexChanged.connect(lambda i: self.sizeChanged.emit(self.itemData(i)))
+
+    def font_size(self):
+        return self.currentData()
+
+    def set_font_size(self, size):
+        """Select `size`, or the nearest available size."""
+        nearest = min(self.SIZES, key=lambda value: abs(value - size))
+        self.setCurrentIndex(self.SIZES.index(nearest))
+
+    def wheelEvent(self, event):
+        event.ignore()
 
 
 class LanguagePicker(QToolButton):
@@ -960,13 +987,10 @@ class OCRApp(QMainWindow):
         toolbar.addWidget(self.create_spacer())
 
         toolbar.addWidget(QLabel("Font Size:"))
-        self.font_size_spinbox = QSpinBox()
-        self.font_size_spinbox.setRange(8, 36)
-        self.font_size_spinbox.setValue(12)
-        self.font_size_spinbox.setSuffix(" pt")
-        self.font_size_spinbox.setToolTip("Adjust font size of the text editor")
-        self.font_size_spinbox.valueChanged.connect(self.on_font_size_changed)
-        toolbar.addWidget(self.font_size_spinbox)
+        self.font_size_picker = FontSizePicker(12)
+        self.font_size_picker.setToolTip("Font size of the text editor")
+        self.font_size_picker.sizeChanged.connect(self.on_font_size_changed)
+        toolbar.addWidget(self.font_size_picker)
 
         # Spacer to push navigation to the right
         spacer = QWidget()
@@ -1018,7 +1042,7 @@ class OCRApp(QMainWindow):
         self.text_edit.textChanged.connect(self.on_text_edited)
         font = self.text_edit.font()
         font.setFamily(self.custom_font_family)
-        font.setPointSize(self.font_size_spinbox.value())
+        font.setPointSize(self.font_size_picker.font_size())
         self.text_edit.setFont(font)
         text_layout.addWidget(self.text_edit)
         content_splitter.addWidget(text_widget)
