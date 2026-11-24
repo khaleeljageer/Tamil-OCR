@@ -1,3 +1,5 @@
+import hashlib
+import json
 import logging
 import logging.handlers
 import os
@@ -12,6 +14,9 @@ import time
 # OpenMP threads oversubscribes the CPU (measured ~27% slower on 4 parallel pages).
 # Child processes inherit this. Respect a value the user has set explicitly.
 os.environ.setdefault('OMP_THREAD_LIMIT', '1')
+
+APP_NAME = "Tamil OCR"
+APP_VERSION = "1.1.0"
 
 logger = logging.getLogger("tamil_ocr")
 
@@ -46,13 +51,13 @@ def setup_logging():
 
 
 from PyQt6.QtCore import Qt, QRectF, QThread, pyqtSignal, QTimer, QThreadPool, QRunnable, QUrl, QObject
-from PyQt6.QtGui import QPixmap, QPen, QColor, QBrush, QPainter, QFontDatabase, QDesktopServices, QAction
+from PyQt6.QtGui import QPixmap, QPen, QColor, QBrush, QPainter, QFontDatabase, QDesktopServices, QAction, QKeySequence
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout,
     QLabel, QPushButton, QFileDialog, QTextEdit, QHBoxLayout, QSplitter,
     QGraphicsView, QGraphicsScene, QGraphicsPixmapItem, QGraphicsRectItem,
-    QProgressBar, QStatusBar, QSpinBox, QFrame, QLineEdit, QDialog, QToolBar, QSizePolicy,
-    QMessageBox
+    QProgressBar, QStatusBar, QSpinBox, QFrame, QDialog, QToolBar, QSizePolicy,
+    QMessageBox, QToolButton, QMenu
 )
 from pdf2image import convert_from_path, pdfinfo_from_path
 from PIL import Image
@@ -79,10 +84,14 @@ else:
 
 
 def extract_text_lines(data, confidence_threshold):
-    """Group Tesseract words into lines, keeping only words above the confidence threshold."""
+    """Group Tesseract words into lines, keeping only words above the confidence threshold.
+
+    A blank line is inserted between paragraphs (a change of Tesseract block or
+    paragraph), so the exported text keeps the page's paragraph structure.
+    """
     text_lines = []
     current_line = []
-    last_block_num = last_par_num = last_line_num = -1
+    last_block_num = last_par_num = last_line_num = None
 
     n_boxes = len(data.get('text', []))
     for i in range(n_boxes):
@@ -97,10 +106,13 @@ def extract_text_lines(data, confidence_threshold):
             par_num = int(data.get('par_num', [0] * n_boxes)[i])
             line_num = int(data.get('line_num', [0] * n_boxes)[i])
 
-            if (block_num != last_block_num) or (par_num != last_par_num) or (line_num != last_line_num):
+            new_paragraph = (block_num, par_num) != (last_block_num, last_par_num)
+            if new_paragraph or line_num != last_line_num:
                 if current_line:
                     text_lines.append(' '.join(current_line))
                     current_line = []
+                if new_paragraph and text_lines:
+                    text_lines.append('')
                 last_block_num, last_par_num, last_line_num = block_num, par_num, line_num
 
             current_line.append(word)
@@ -109,6 +121,165 @@ def extract_text_lines(data, confidence_threshold):
         text_lines.append(' '.join(current_line))
 
     return text_lines
+
+
+# Friendly names for language models; anything else is shown by its code
+LANGUAGE_NAMES = {
+    'tam_cus': 'Tamil (custom model)',
+    'tam': 'Tamil',
+    'eng': 'English',
+}
+DEFAULT_LANGUAGES = ['tam_cus', 'eng']
+
+
+def available_languages():
+    """Language codes of the .traineddata models in the bundled tessdata directory."""
+    try:
+        codes = sorted(f[:-len('.traineddata')] for f in os.listdir(tessdata_dir)
+                       if f.endswith('.traineddata'))
+    except OSError:
+        logger.exception("Cannot list tessdata directory %s", tessdata_dir)
+        return []
+    # 'osd' is orientation/script detection, not a recognition language
+    codes = [c for c in codes if c != 'osd']
+    # Known languages first, in a stable order
+    known = [c for c in LANGUAGE_NAMES if c in codes]
+    return known + [c for c in codes if c not in known]
+
+
+# --- Proofreading sessions ------------------------------------------------------
+
+SESSION_EXTENSION = ".tamilocr"
+SESSION_FORMAT = 1
+# Only the Tesseract fields the app uses are stored, to keep session files small
+SESSION_OCR_KEYS = ('text', 'conf', 'left', 'top', 'width', 'height', 'block_num', 'par_num', 'line_num')
+
+
+def file_sha256(path):
+    digest = hashlib.sha256()
+    with open(path, 'rb') as f:
+        for chunk in iter(lambda: f.read(1 << 20), b''):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def compact_ocr_data(data):
+    return {k: list(data[k]) for k in SESSION_OCR_KEYS if k in data}
+
+
+def write_session_file(session_path, session):
+    """Write atomically so a crash mid-save never leaves a truncated session."""
+    tmp_path = session_path + ".tmp"
+    with open(tmp_path, 'w', encoding='utf-8') as f:
+        json.dump(session, f, ensure_ascii=False, separators=(',', ':'))
+    os.replace(tmp_path, session_path)
+
+
+def read_session_file(session_path):
+    with open(session_path, encoding='utf-8') as f:
+        session = json.load(f)
+    if not isinstance(session, dict) or session.get('format') != SESSION_FORMAT:
+        raise ValueError("Not a Tamil OCR session file, or it was saved by an incompatible version")
+    if not isinstance(session.get('pages'), list):
+        raise ValueError("Session file has no page data")
+    return session
+
+
+def resolve_session_source(session_path, session):
+    """Find the session's source document: saved absolute path, else the same relative
+    location next to the session file (so a folder can be moved or shared as a whole)."""
+    candidates = [session.get('source_path')]
+    rel = session.get('source_relpath')
+    if rel:
+        candidates.append(os.path.join(os.path.dirname(os.path.abspath(session_path)), rel))
+    for candidate in candidates:
+        if candidate and os.path.isfile(candidate):
+            return candidate
+    return None
+
+
+class StayOpenMenu(QMenu):
+    """Menu whose checkable items toggle without closing it (for multi-select)."""
+
+    def mouseReleaseEvent(self, event):
+        action = self.activeAction()
+        if action is not None and action.isEnabled() and action.isCheckable():
+            action.trigger()
+            return
+        super().mouseReleaseEvent(event)
+
+
+class LanguagePicker(QToolButton):
+    """Multi-select of installed Tesseract languages.
+
+    Order matters to Tesseract (the first language is the primary one), so the
+    selection keeps the order in which languages were ticked.
+    """
+    languages_changed = pyqtSignal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.menu_ = StayOpenMenu(self)
+        self.setMenu(self.menu_)
+        self.actions_by_code = {}
+        self.selected = []
+
+        codes = available_languages()
+        for code in codes:
+            label = LANGUAGE_NAMES.get(code, code)
+            action = QAction(f"{label}  [{code}]", self, checkable=True)
+            action.toggled.connect(lambda checked, c=code: self._on_toggled(c, checked))
+            self.menu_.addAction(action)
+            self.actions_by_code[code] = action
+        if not codes:
+            missing = QAction("No language models found in tessdata/", self)
+            missing.setEnabled(False)
+            self.menu_.addAction(missing)
+
+        self.set_languages([c for c in DEFAULT_LANGUAGES if c in codes] or codes[:1])
+
+    def _on_toggled(self, code, checked):
+        if checked and code not in self.selected:
+            self.selected.append(code)
+        elif not checked and code in self.selected:
+            if len(self.selected) == 1:
+                # At least one language is required; undo the uncheck
+                self.actions_by_code[code].blockSignals(True)
+                self.actions_by_code[code].setChecked(True)
+                self.actions_by_code[code].blockSignals(False)
+                return
+            self.selected.remove(code)
+        self._update_label()
+        self.languages_changed.emit()
+
+    def _update_label(self):
+        self.setText(self.lang_string() or "(none)")
+        names = [LANGUAGE_NAMES.get(c, c) for c in self.selected]
+        self.setToolTip("OCR languages (first is primary): " + ", ".join(names) +
+                        "\nClick to choose from the models installed in tessdata/")
+
+    def set_languages(self, codes):
+        """Select exactly these languages, in order; unknown codes are ignored.
+        Returns the codes that are not installed."""
+        missing = [c for c in codes if c not in self.actions_by_code]
+        wanted = [c for c in codes if c in self.actions_by_code]
+        if not wanted:
+            return missing
+        self.selected = list(wanted)
+        for code, action in self.actions_by_code.items():
+            action.blockSignals(True)
+            action.setChecked(code in wanted)
+            action.blockSignals(False)
+        self._update_label()
+        self.languages_changed.emit()
+        return missing
+
+    def languages(self):
+        return list(self.selected)
+
+    def lang_string(self):
+        return '+'.join(self.selected)
 
 
 class PDFConversionWorker(QThread):
@@ -276,6 +447,12 @@ class OCRManager(QObject):
                        self.confidence_threshold, self.lang_string, self.signals)
         self.thread_pool.start(task)
 
+    def add_cached_result(self, page_index, ocr_data):
+        """Count a page whose OCR result is already known (restored from a session)."""
+        text = '\n'.join(extract_text_lines(ocr_data, self.confidence_threshold))
+        self.page_processed.emit(page_index, text, ocr_data)
+        self._count_finished_page()
+
     def start_processing(self, image_paths, confidence_threshold, lang_string):
         """Convenience: start a job for a known list of pages."""
         self.start_job(len(image_paths), confidence_threshold, lang_string)
@@ -320,6 +497,8 @@ class OCRManager(QObject):
 
 class ZoomableGraphicsView(QGraphicsView):
     user_zoomed = pyqtSignal()  # emitted when the user zooms with Ctrl+wheel
+    page_up_requested = pyqtSignal()
+    page_down_requested = pyqtSignal()
 
     def __init__(self, scene):
         super().__init__(scene)
@@ -331,6 +510,22 @@ class ZoomableGraphicsView(QGraphicsView):
                             QPainter.RenderHint.TextAntialiasing)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+
+    def keyPressEvent(self, event):
+        """PgUp/PgDown scroll a zoomed page; at the top/bottom edge they change page
+        (like a PDF reader). Kept local to the viewer so the text editor's own
+        PgUp/PgDown scrolling is not taken over by a window-wide shortcut."""
+        if event.modifiers() == Qt.KeyboardModifier.NoModifier:
+            bar = self.verticalScrollBar()
+            if event.key() == Qt.Key.Key_PageDown and bar.value() >= bar.maximum():
+                self.page_down_requested.emit()
+                event.accept()
+                return
+            if event.key() == Qt.Key.Key_PageUp and bar.value() <= bar.minimum():
+                self.page_up_requested.emit()
+                event.accept()
+                return
+        super().keyPressEvent(event)
 
     def wheelEvent(self, event):
         # Check if Ctrl key is pressed for zoom
@@ -454,7 +649,7 @@ class AboutDialog(QDialog):
         layout.addWidget(org_label)
 
         # Version
-        version_label = QLabel("<b>Version:</b> 1.0.0")
+        version_label = QLabel(f"<b>Version:</b> {APP_VERSION}")
         version_label.setTextFormat(Qt.TextFormat.RichText)
         layout.addWidget(version_label)
 
@@ -496,7 +691,6 @@ class AboutDialog(QDialog):
 class OCRApp(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Tamil OCR Desktop App")
         self.setGeometry(200, 100, 1200, 800)
 
         self.temp_pages = []  # image path for each page (user's file or app-owned temp files)
@@ -510,6 +704,13 @@ class OCRApp(QMainWindow):
         self.ocr_text = {}  # page -> OCR text filtered at the current confidence threshold
         self.edited_text = {}  # page -> user-edited text (present only if the page was edited)
         self.page_errors = {}  # page -> OCR error message
+
+        # Document / session
+        self.source_path = None  # the image or PDF currently open
+        self.session_path = None  # .tamilocr file this document was saved to / loaded from
+        self.session_dirty = False  # user edits not yet saved to a session
+        self.session_cache = {}  # page -> OCR data restored from a session (skips OCR)
+        self.pending_page_index = None  # page to show once rendered (restored session position)
 
         # Store confidence threshold value directly to prevent widget issues
         self.confidence_threshold = 0
@@ -534,11 +735,21 @@ class OCRApp(QMainWindow):
         self.refit_timer.setInterval(100)
         self.refit_timer.timeout.connect(self.refit_if_not_zoomed)
 
-        # Ensure custom_font_family is always initialized
+        # Load the Tamil font BEFORE building the UI, so the editor actually uses it
         self.custom_font_family = "monospace"
+        font_path = resource_path(os.path.join("font", "marutham.ttf"))
+        if os.path.exists(font_path):
+            font_id = QFontDatabase.addApplicationFont(font_path)
+            if font_id != -1:
+                self.custom_font_family = QFontDatabase.applicationFontFamilies(font_id)[0]
+                logger.info("Custom font '%s' loaded", self.custom_font_family)
+            else:
+                logger.warning("Failed to load custom font from %s; using monospace", font_path)
+        else:
+            logger.warning("Custom font file not found at %s; using monospace", font_path)
 
-        # Setup UI
         self.setup_ui()
+        self.update_window_title()
 
         # Connect OCR manager signals
         self.ocr_manager.page_processed.connect(self.on_page_processed)
@@ -560,22 +771,6 @@ class OCRApp(QMainWindow):
 
         self.page_info_label = QLabel("No document loaded")
         self.status_bar.addPermanentWidget(self.page_info_label)
-        
-
-        # Load custom font
-        font_path = resource_path(os.path.join("font", "marutham.ttf"))
-        if os.path.exists(font_path):
-            font_id = QFontDatabase.addApplicationFont(font_path)
-            if font_id != -1:
-                self.custom_font_family = QFontDatabase.applicationFontFamilies(font_id)[0]
-                logger.info("Custom font '%s' loaded", self.custom_font_family)
-            else:
-                self.custom_font_family = "monospace"
-                logger.warning("Failed to load custom font from %s; using monospace", font_path)
-        else:
-            self.custom_font_family = "monospace"
-            logger.warning("Custom font file not found at %s; using monospace", font_path)
-
 
     def setup_ui(self):
         # Central widget and layout
@@ -589,24 +784,48 @@ class OCRApp(QMainWindow):
         self.menu_bar = self.menuBar()
 
         # File Menu
+        def make_action(text, slot, shortcuts=(), menu=None, **kwargs):
+            action = QAction(text, self, **kwargs)
+            action.triggered.connect(slot)
+            if shortcuts:
+                action.setShortcuts([QKeySequence(s) for s in shortcuts])
+            if menu is not None:
+                menu.addAction(action)
+            return action
+
         file_menu = self.menu_bar.addMenu("&File")
-        self.open_action = QAction("&Open Image/PDF", self)
-        self.open_action.triggered.connect(self.open_file)
-        self.export_action = QAction("&Export Text", self)
-        self.export_action.triggered.connect(self.export_text)
-        exit_action = QAction("&Exit", self)
-        exit_action.triggered.connect(self.close)
-        file_menu.addAction(self.open_action)
-        file_menu.addAction(self.export_action)
+        self.open_action = make_action("&Open Image/PDF/Session…", self.open_file,
+                                       [QKeySequence.StandardKey.Open], file_menu)
         file_menu.addSeparator()
-        file_menu.addAction(exit_action)
+        self.save_session_action = make_action("&Save Session", self.save_session,
+                                               [QKeySequence.StandardKey.Save], file_menu)
+        self.save_session_as_action = make_action("Save Session &As…", self.save_session_as,
+                                                  ["Ctrl+Shift+S"], file_menu)
+        self.export_action = make_action("&Export Text…", self.export_text, ["Ctrl+E"], file_menu)
+        file_menu.addSeparator()
+        make_action("E&xit", self.close, ["Ctrl+Q"], file_menu)
+
+        # Edit Menu
+        edit_menu = self.menu_bar.addMenu("&Edit")
+        self.rerun_action = make_action("&Re-Run OCR", self.rerun_ocr, ["Ctrl+R"], edit_menu)
+        self.reset_action = make_action("Reset Page &Text", self.reset_current_text, ["Ctrl+Shift+R"], edit_menu)
 
         # View Menu
         view_menu = self.menu_bar.addMenu("&View")
-        self.toggle_highlights_action = QAction("Show &Highlights", self, checkable=True)
+        self.prev_page_action = make_action("&Previous Page", self.prev_page,
+                                            ["Ctrl+PgUp", "Alt+Left"], view_menu)
+        self.next_page_action = make_action("&Next Page", self.next_page,
+                                            ["Ctrl+PgDown", "Alt+Right"], view_menu)
+        self.first_page_action = make_action("&First Page", self.first_page, ["Ctrl+Home"], view_menu)
+        self.last_page_action = make_action("&Last Page", self.last_page, ["Ctrl+End"], view_menu)
+        view_menu.addSeparator()
+        make_action("Zoom &In", self.zoom_in, [QKeySequence.StandardKey.ZoomIn, "Ctrl+="], view_menu)
+        make_action("Zoom &Out", self.zoom_out, [QKeySequence.StandardKey.ZoomOut], view_menu)
+        make_action("&Fit to Window", self.fit_view, ["Ctrl+0"], view_menu)
+        view_menu.addSeparator()
+        self.toggle_highlights_action = make_action("Show &Highlights", self.toggle_highlight_visibility,
+                                                    ["Ctrl+H"], view_menu, checkable=True)
         self.toggle_highlights_action.setChecked(True)
-        self.toggle_highlights_action.triggered.connect(self.toggle_highlight_visibility)
-        view_menu.addAction(self.toggle_highlights_action)
 
         # Help Menu
         help_menu = self.menu_bar.addMenu("&Help")
@@ -620,13 +839,13 @@ class OCRApp(QMainWindow):
 
         # --- Toolbar Widgets ---
         self.rerun_ocr_btn = QPushButton("Re-Run OCR")
-        self.rerun_ocr_btn.setToolTip("Re-Run OCR with current confidence threshold")
+        self.rerun_ocr_btn.setToolTip("Re-run OCR on all pages with the selected languages (Ctrl+R)")
         self.rerun_ocr_btn.setEnabled(False)
         self.rerun_ocr_btn.clicked.connect(self.rerun_ocr)
         toolbar.addWidget(self.rerun_ocr_btn)
 
         self.reset_text_btn = QPushButton("Reset Text")
-        self.reset_text_btn.setToolTip("Reset current page text to original OCR result")
+        self.reset_text_btn.setToolTip("Reset current page text to the original OCR result (Ctrl+Shift+R)")
         self.reset_text_btn.setEnabled(False)
         self.reset_text_btn.clicked.connect(self.reset_current_text)
         toolbar.addWidget(self.reset_text_btn)
@@ -651,9 +870,8 @@ class OCRApp(QMainWindow):
         toolbar.addWidget(self.create_spacer())
 
         toolbar.addWidget(QLabel("Langs:"))
-        self.lang_input = QLineEdit("tam_cus+eng")
-        self.lang_input.setToolTip("Enter language codes separated by '+' (e.g., tam+eng)")
-        toolbar.addWidget(self.lang_input)
+        self.lang_picker = LanguagePicker()
+        toolbar.addWidget(self.lang_picker)
 
         # Add spacing around separator
         toolbar.addWidget(self.create_spacer())
@@ -675,11 +893,13 @@ class OCRApp(QMainWindow):
         toolbar.addWidget(spacer)
 
         self.prev_btn = QPushButton("← Prev Page")
+        self.prev_btn.setToolTip("Previous page (Ctrl+PgUp or Alt+←; PgUp in the image view)")
         self.prev_btn.setEnabled(False)
         self.prev_btn.clicked.connect(self.prev_page)
         toolbar.addWidget(self.prev_btn)
 
         self.next_btn = QPushButton("Next Page →")
+        self.next_btn.setToolTip("Next page (Ctrl+PgDown or Alt+→; PgDown in the image view)")
         self.next_btn.setEnabled(False)
         self.next_btn.clicked.connect(self.next_page)
         toolbar.addWidget(self.next_btn)
@@ -730,6 +950,8 @@ class OCRApp(QMainWindow):
         self.image_viewer.zoom_out_btn.clicked.connect(self.zoom_out)
         self.image_viewer.fit_btn.clicked.connect(self.fit_view)
         self.graphics_view.user_zoomed.connect(self.on_user_zoomed)
+        self.graphics_view.page_up_requested.connect(self.prev_page)
+        self.graphics_view.page_down_requested.connect(self.next_page)
         self.image_viewer.resized.connect(self.refit_timer.start)
 
     def create_spacer(self, width=5):
@@ -774,8 +996,10 @@ class OCRApp(QMainWindow):
         try:
             if self.temp_pages:
                 self.edited_text[self.current_page_index] = self.text_edit.toPlainText()
+                self.mark_dirty()
                 self.update_edit_status()
                 self.reset_text_btn.setEnabled(not self.busy)
+                self.reset_action.setEnabled(not self.busy)
         except Exception:
             logger.exception("Error in on_text_edited")
 
@@ -796,10 +1020,12 @@ class OCRApp(QMainWindow):
     def reset_current_text(self):
         """Discard edits and restore the original OCR result for the current page"""
         try:
-            self.edited_text.pop(self.current_page_index, None)
+            if self.edited_text.pop(self.current_page_index, None) is not None:
+                self.mark_dirty()
             self.set_editor_text(self.ocr_text.get(self.current_page_index, ""))
             self.update_edit_status()
             self.reset_text_btn.setEnabled(False)
+            self.reset_action.setEnabled(False)
         except Exception:
             logger.exception("Error in reset_current_text")
 
@@ -870,6 +1096,9 @@ class OCRApp(QMainWindow):
         self.ocr_manager.stop_all()
 
     def closeEvent(self, event):
+        if not self.confirm_discard_changes():
+            event.ignore()
+            return
         try:
             self.stop_workers()
             self.clear_temp_pages()
@@ -891,7 +1120,7 @@ class OCRApp(QMainWindow):
             urls = event.mimeData().urls()
             if urls:
                 # Only one document is open at a time
-                self.process_file(urls[0].toLocalFile())
+                self.open_path(urls[0].toLocalFile())
         except Exception:
             logger.exception("Error in dropEvent")
 
@@ -901,14 +1130,27 @@ class OCRApp(QMainWindow):
                 return
             file_path, _ = QFileDialog.getOpenFileName(
                 self, "Open File", "",
-                "Images/PDF (*.png *.jpg *.jpeg *.tif *.tiff *.pdf)"
+                "Images, PDF or session (*.png *.jpg *.jpeg *.tif *.tiff *.pdf *{SESSION_EXTENSION});;"
+                "Images/PDF (*.png *.jpg *.jpeg *.tif *.tiff *.pdf);;"
+                f"Tamil OCR session (*{SESSION_EXTENSION})"
             )
             if file_path:
-                self.process_file(file_path)
+                self.open_path(file_path)
         except Exception:
             logger.exception("Error in open_file")
 
-    def process_file(self, file_path):
+    def open_path(self, file_path):
+        """User-initiated open of a document or session (asks about unsaved edits first)."""
+        if not file_path or self.busy or not self.confirm_discard_changes():
+            return
+        if file_path.lower().endswith(SESSION_EXTENSION):
+            self.load_session(file_path)
+        else:
+            self.process_file(file_path)
+
+    def process_file(self, file_path, session=None):
+        """Open an image or PDF. With `session`, restore its OCR results and edits
+        instead of re-running OCR on those pages."""
         try:
             if not file_path:
                 return
@@ -930,7 +1172,25 @@ class OCRApp(QMainWindow):
             self.expected_pages = 0
             self.converted_pages = 0
             self.ocr_done_pages = 0
+            self.source_path = os.path.abspath(file_path)
+            self.session_cache = {}
+            self.pending_page_index = None
+            self.session_dirty = False
+            if session is None:
+                self.session_path = None
+            else:
+                for i, page in enumerate(session.get('pages', [])):
+                    if not isinstance(page, dict):
+                        continue
+                    if page.get('ocr_data'):
+                        self.session_cache[i] = page['ocr_data']
+                    if page.get('edited_text') is not None:
+                        self.edited_text[i] = page['edited_text']
+                saved_page = session.get('current_page', 0)
+                if isinstance(saved_page, int) and saved_page > 0:
+                    self.pending_page_index = saved_page
             self.update_edit_status()
+            self.update_window_title()
 
             # Show progress bar and disable UI
             self.progress_bar.setVisible(True)
@@ -958,7 +1218,7 @@ class OCRApp(QMainWindow):
                 self.update_page_info()
                 self.display_current_page_with_cache()
                 self.start_ocr_job(1)
-                self.ocr_manager.add_page(0, file_path)
+                self.queue_page(0, file_path)
         except Exception as e:
             logger.exception("Error in process_file")
             self.on_processing_error(str(e))
@@ -976,7 +1236,11 @@ class OCRApp(QMainWindow):
         try:
             self.temp_pages.append(image_path)
             self.converted_pages += 1
-            self.ocr_manager.add_page(page_index, image_path)
+            if page_index == self.pending_page_index:
+                # Restored session: return to the page the user was on
+                self.current_page_index = page_index
+                self.pending_page_index = None
+            self.queue_page(page_index, image_path)
             if page_index == self.current_page_index:
                 self.display_current_page_with_cache()
             self.update_nav_buttons()
@@ -1004,13 +1268,15 @@ class OCRApp(QMainWindow):
             self, "PDF partly converted",
             f"Only the first {converted} page(s) could be converted:\n\n{message}")
 
+    def queue_page(self, page_index, image_path):
+        """OCR a page, or reuse its result if it was restored from a session."""
+        if page_index in self.session_cache:
+            self.ocr_manager.add_cached_result(page_index, self.session_cache.pop(page_index))
+        else:
+            self.ocr_manager.add_page(page_index, image_path)
+
     def current_lang_string(self):
-        lang_string = self.lang_input.text().strip()
-        if not lang_string:
-            # Fallback to default if empty
-            lang_string = "tam_cus+eng"
-            self.lang_input.setText(lang_string)
-        return lang_string
+        return self.lang_picker.lang_string()
 
     def start_ocr_job(self, total_pages):
         """Start an OCR job; pages are then added with ocr_manager.add_page()."""
@@ -1038,10 +1304,13 @@ class OCRApp(QMainWindow):
             self.ocr_manager.stop_all()
 
             # Clear cached data
+            if self.edited_text:
+                self.mark_dirty()  # discarded edits differ from any saved session
             self.ocr_data_cache = {}
             self.ocr_text = {}
             self.edited_text = {}
             self.page_errors = {}
+            self.session_cache = {}
 
             # Show progress and disable UI
             self.progress_bar.setVisible(True)
@@ -1122,7 +1391,7 @@ class OCRApp(QMainWindow):
                 QMessageBox.warning(
                     self, "OCR failed",
                     f"OCR failed on every page. Check the language codes "
-                    f"(currently '{self.lang_input.text()}').\n\n{first_error}")
+                    f"(currently '{self.current_lang_string()}').\n\n{first_error}")
         except Exception:
             logger.exception("Error in on_processing_complete")
 
@@ -1141,10 +1410,15 @@ class OCRApp(QMainWindow):
         has_pages = bool(self.temp_pages)
         self.open_action.setEnabled(enabled)
         self.export_action.setEnabled(enabled and has_pages)
+        self.save_session_action.setEnabled(enabled and has_pages)
+        self.save_session_as_action.setEnabled(enabled and has_pages)
         self.rerun_ocr_btn.setEnabled(enabled and has_pages)
-        self.reset_text_btn.setEnabled(enabled and self.is_page_modified(self.current_page_index))
+        self.rerun_action.setEnabled(enabled and has_pages)
+        can_reset = enabled and self.is_page_modified(self.current_page_index)
+        self.reset_text_btn.setEnabled(can_reset)
+        self.reset_action.setEnabled(can_reset)
         self.confidence_spinbox.setEnabled(enabled)
-        self.lang_input.setEnabled(enabled)
+        self.lang_picker.setEnabled(enabled)
 
     # --- Page display ---------------------------------------------------------
 
@@ -1194,6 +1468,7 @@ class OCRApp(QMainWindow):
 
             self.update_edit_status()
             self.reset_text_btn.setEnabled(not self.busy and self.is_page_modified(idx))
+            self.reset_action.setEnabled(not self.busy and self.is_page_modified(idx))
             self.update_nav_buttons()
             self.update_page_info()
         except Exception:
@@ -1265,8 +1540,14 @@ class OCRApp(QMainWindow):
 
     def update_nav_buttons(self):
         """Prev/Next are enabled only when there is a page to go to (pages may still be rendering)."""
-        self.prev_btn.setEnabled(self.current_page_index > 0)
-        self.next_btn.setEnabled(self.current_page_index < len(self.temp_pages) - 1)
+        has_prev = self.current_page_index > 0
+        has_next = self.current_page_index < len(self.temp_pages) - 1
+        self.prev_btn.setEnabled(has_prev)
+        self.next_btn.setEnabled(has_next)
+        self.prev_page_action.setEnabled(has_prev)
+        self.first_page_action.setEnabled(has_prev)
+        self.next_page_action.setEnabled(has_next)
+        self.last_page_action.setEnabled(has_next)
 
     def prev_page(self):
         # Edits are stored as they happen (on_text_edited), so nothing to save here
@@ -1278,6 +1559,162 @@ class OCRApp(QMainWindow):
         if self.temp_pages and self.current_page_index < len(self.temp_pages) - 1:
             self.current_page_index += 1
             self.display_current_page_with_cache()
+
+    def first_page(self):
+        if self.temp_pages and self.current_page_index != 0:
+            self.current_page_index = 0
+            self.display_current_page_with_cache()
+
+    def last_page(self):
+        if self.temp_pages and self.current_page_index != len(self.temp_pages) - 1:
+            self.current_page_index = len(self.temp_pages) - 1
+            self.display_current_page_with_cache()
+
+    # --- Sessions -------------------------------------------------------------
+
+    def update_window_title(self):
+        if self.session_path:
+            name = os.path.basename(self.session_path)
+        elif self.source_path:
+            name = os.path.basename(self.source_path)
+        else:
+            self.setWindowTitle(APP_NAME)
+            return
+        self.setWindowTitle(f"{name}{' *' if self.session_dirty else ''} — {APP_NAME}")
+
+    def mark_dirty(self):
+        if not self.session_dirty:
+            self.session_dirty = True
+            self.update_window_title()
+
+    def confirm_discard_changes(self):
+        """Before closing or replacing the document: offer to save unsaved edits.
+        Returns False if the user cancels."""
+        if not (self.session_dirty and self.temp_pages):
+            return True
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle("Unsaved changes")
+        box.setText("This document has proofreading edits that are not saved.")
+        box.setInformativeText("Save them as a session before continuing?")
+        box.setStandardButtons(QMessageBox.StandardButton.Save | QMessageBox.StandardButton.Discard
+                               | QMessageBox.StandardButton.Cancel)
+        box.setDefaultButton(QMessageBox.StandardButton.Save)
+        answer = box.exec()
+        if answer == QMessageBox.StandardButton.Save:
+            return self.save_session()
+        return answer == QMessageBox.StandardButton.Discard
+
+    def save_session(self):
+        """Save to the current session file, or ask where (Ctrl+S). Returns True if saved."""
+        if self.session_path:
+            return self.write_session(self.session_path)
+        return self.save_session_as()
+
+    def save_session_as(self):
+        if self.busy or not self.temp_pages:
+            return False
+        if self.session_path:
+            suggested = self.session_path
+        else:
+            suggested = os.path.splitext(self.source_path or "session")[0] + SESSION_EXTENSION
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save Session", suggested, f"Tamil OCR session (*{SESSION_EXTENSION})")
+        if not path:
+            return False
+        if not path.lower().endswith(SESSION_EXTENSION):
+            path += SESSION_EXTENSION
+        return self.write_session(path)
+
+    def build_session(self, session_path):
+        session_dir = os.path.dirname(os.path.abspath(session_path))
+        try:
+            relpath = os.path.relpath(self.source_path, session_dir)
+        except ValueError:  # different drive on Windows
+            relpath = None
+        return {
+            'format': SESSION_FORMAT,
+            'app_version': APP_VERSION,
+            'saved_at': time.strftime('%Y-%m-%dT%H:%M:%S%z'),
+            'source_path': self.source_path,
+            'source_relpath': relpath,
+            'source_sha256': file_sha256(self.source_path),
+            'languages': self.lang_picker.languages(),
+            'confidence_threshold': self.confidence_threshold,
+            'current_page': self.current_page_index,
+            'page_count': len(self.temp_pages),
+            'pages': [
+                {
+                    'ocr_data': compact_ocr_data(self.ocr_data_cache[i]) if i in self.ocr_data_cache else None,
+                    'edited_text': self.edited_text.get(i),
+                }
+                for i in range(len(self.temp_pages))
+            ],
+        }
+
+    def write_session(self, session_path):
+        if self.busy or not self.temp_pages or not self.source_path:
+            return False
+        try:
+            write_session_file(session_path, self.build_session(session_path))
+        except (OSError, TypeError, ValueError) as e:
+            logger.exception("Error saving session")
+            QMessageBox.critical(self, "Save failed", f"Could not save the session to\n{session_path}:\n\n{e}")
+            return False
+        self.session_path = session_path
+        self.session_dirty = False
+        self.update_window_title()
+        self.status_bar.showMessage(f"Session saved to {session_path}")
+        logger.info("Session saved to %s", session_path)
+        return True
+
+    def load_session(self, session_path):
+        try:
+            session = read_session_file(session_path)
+        except (OSError, ValueError) as e:
+            logger.exception("Error reading session %s", session_path)
+            QMessageBox.warning(self, "Cannot open session", f"{session_path}\n\n{e}")
+            return False
+
+        source = resolve_session_source(session_path, session)
+        if source is None:
+            QMessageBox.information(
+                self, "Locate document",
+                f"The document for this session was not found:\n{session.get('source_path')}\n\n"
+                "Please locate it.")
+            source, _ = QFileDialog.getOpenFileName(
+                self, "Locate Document", os.path.dirname(session_path),
+                "Images/PDF (*.png *.jpg *.jpeg *.tif *.tiff *.pdf)")
+            if not source:
+                return False
+
+        try:
+            source_changed = file_sha256(source) != session.get('source_sha256')
+        except OSError as e:
+            QMessageBox.warning(self, "Cannot open document", f"{source}\n\n{e}")
+            return False
+        if source_changed:
+            answer = QMessageBox.question(
+                self, "Document changed",
+                "The document has changed since this session was saved, so the saved OCR "
+                "results and edits may not match its pages.\n\nOpen the session anyway?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No)
+            if answer != QMessageBox.StandardButton.Yes:
+                return False
+
+        missing = self.lang_picker.set_languages(session.get('languages') or [])
+        if missing:
+            logger.warning("Session languages not installed: %s", missing)
+        threshold = session.get('confidence_threshold', 0)
+        if isinstance(threshold, int) and 0 <= threshold <= 100:
+            self.confidence_spinbox.setValue(threshold)
+
+        logger.info("Loading session %s (document %s)", session_path, source)
+        self.process_file(source, session=session)
+        self.session_path = session_path
+        self.update_window_title()
+        return True
 
     def clear_temp_pages(self):
         """Delete only the app-owned temp directory; user files are never removed."""

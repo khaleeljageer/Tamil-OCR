@@ -13,6 +13,7 @@ Items are checked off as they are fixed.
 - [x] **6. PDFs fail in the Windows .exe.** Poppler path wasn't wrapped in `resource_path()`, and the low-DPI fallback pointed to a non-existent `binary/windows/poppler/bin`. Fix: one `POPPLER_PATH` constant via `resource_path()`. _(Verified on Linux; needs a check in the Windows build.)_
 - [x] **7. If one page fails, the app never reports completion.** Failed pages never counted toward the total. Fix: count failures, report them, and show the error on the failed page.
 - [x] **8. The menu stays active during processing.** `set_ui_enabled()` referenced non-existent `open_btn` / `export_btn`; File → Open/Export and drag-and-drop stayed live during OCR. Fix: disable the actual menu actions and ignore drops while busy.
+- [x] **9. The editor never used the bundled Tamil font.** `marutham.ttf` was loaded after the editor was created, so the editor stayed on `monospace`. Fix: load the font before building the UI. _(Found while adding the features.)_
 
 ## 🟡 Performance & robustness
 
@@ -29,15 +30,15 @@ Items are checked off as they are fixed.
 
 - [ ] Image preprocessing (grayscale, binarisation, deskew) and a `--psm` page-segmentation option.
 - [ ] Export searchable PDF via `pytesseract.image_to_pdf_or_hocr(..., extension='pdf')`.
-- [ ] Preserve paragraph breaks (blank line between Tesseract blocks/paragraphs).
-- [ ] Keyboard shortcuts (Ctrl+O, Ctrl+S, PgUp/PgDn); ~~disable Prev/Next at the first/last page~~ _(done — needed for page-by-page loading)_.
-- [ ] Language picker populated from the `.traineddata` files in `tessdata/`.
-- [ ] Save/restore a proofreading session.
+- [x] Preserve paragraph breaks (blank line between Tesseract blocks/paragraphs).
+- [x] Keyboard shortcuts (Ctrl+O, Ctrl+S, PgUp/PgDn); disable Prev/Next at the first/last page. _Ctrl+O open, Ctrl+S / Ctrl+Shift+S save session, Ctrl+E export text, Ctrl+Q quit, Ctrl+R re-run OCR, Ctrl+Shift+R reset page text, Ctrl+PgUp/PgDn or Alt+←/→ change page, Ctrl+Home/End first/last page, Ctrl+= / Ctrl+- / Ctrl+0 zoom, Ctrl+H highlights. Plain PgUp/PgDn work in the image view (scroll a zoomed page, then change page) and keep scrolling text in the editor._
+- [x] Language picker populated from the `.traineddata` files in `tessdata/`. _Multi-select menu; tick order sets the primary language; at least one stays selected._
+- [x] Save/restore a proofreading session. _`.tamilocr` file (JSON) with the OCR results, edits, current page, languages and confidence. Restoring re-renders page images but skips OCR. Finds the document if it was moved together with the session, warns if the document changed, and asks to save unsaved edits on close/open._
 
 ## 📦 Repo & packaging
 
 - [ ] `.git` is ~523 MB: move release binaries to GitHub Releases; drop poppler headers/man pages and Tesseract training tools from `binary/`.
 - [ ] GitHub Actions workflow to build Linux + Windows executables with PyInstaller and attach them to a Release.
 - [ ] README: fix `your-username` clone URL, add Windows build steps, document `poppler-utils` requirement on Linux.
-- [ ] Pin versions in `requirements.txt`; ~~remove `.idea/` from git~~ _(done)_; single source for the app version.
+- [ ] Pin versions in `requirements.txt`; ~~remove `.idea/` from git~~ _(done)_; ~~single source for the app version~~ _(done — `APP_VERSION` in `main.py`, now 1.1.0)_.
 - [ ] Unit tests for text-line extraction and confidence filtering.
