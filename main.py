@@ -666,7 +666,8 @@ class AboutDialog(QDialog):
             Tesseract OCR (<a href="https://tesseract-ocr.github.io/">Apache 2.0 License</a>), <br>
             PyQt6 (<a href="https://www.riverbankcomputing.com/software/pyqt/license/">GPLv3 License</a>), <br>
             pdf2image (<a href="https://github.com/Belval/pdf2image/blob/master/LICENSE">MIT License</a>), <br>
-            Pillow (<a href="https://github.com/python-pillow/Pillow/blob/master/LICENSE">HPX License</a>).<br><br>
+            Pillow (<a href="https://github.com/python-pillow/Pillow/blob/main/LICENSE">MIT-CMU License</a>), <br>
+            Poppler (<a href="https://poppler.freedesktop.org/">GPL License</a>).<br><br>
             This project is licensed under <a href="https://www.gnu.org/licenses/gpl-3.0.en.html">GPL v3</a>.
         """)
         thanks_label.setOpenExternalLinks(True)
