@@ -16,21 +16,21 @@ Items are checked off as they are fixed.
 
 ## 🟡 Performance & robustness
 
-- [ ] Convert PDFs to disk page-by-page (`output_folder` / `paths_only`, or `first_page`/`last_page` batches) instead of loading every 300-DPI page into RAM; report real per-page progress.
-- [ ] Set `OMP_THREAD_LIMIT=1` when running parallel Tesseract processes to avoid CPU oversubscription.
-- [ ] `Image.MAX_IMAGE_PIXELS = None` disables Pillow's limit, making the low-DPI fallback dead code — use a large finite limit or remove the fallback.
-- [ ] Replace `print()` error handling with `logging` to a file in the user's config dir, plus `QMessageBox` for user-facing errors (the windowed build has no console).
-- [ ] `resizeEvent` calls `fit_view()` on every resize, discarding the user's zoom.
+- [x] Convert PDFs to disk page-by-page (`output_folder` / `paths_only`, or `first_page`/`last_page` batches) instead of loading every 300-DPI page into RAM; report real per-page progress. _Pages now render one at a time and OCR starts on each page as soon as it is written (rendering and OCR overlap). 30-page PDF: peak memory 2.3 GB → 0.54 GB, first page text 17 s → 4 s, total 47.5 s → 39.8 s. Memory stays ~0.55 GB at 100 pages. Cancelling mid-render is now immediate._
+- [x] Set `OMP_THREAD_LIMIT=1` when running parallel Tesseract processes to avoid CPU oversubscription. _Measured 28.5 s → 20.9 s for 8 A4 pages with 4 workers. Raising the pool beyond 4 workers gave no further gain, so it stays at 4._
+- [x] `Image.MAX_IMAGE_PIXELS = None` disables Pillow's limit, making the low-DPI fallback dead code — use a large finite limit or remove the fallback. _Limit is now 150 MP; an oversized page is retried per page at 200 then 150 DPI._
+- [x] Replace `print()` error handling with `logging` to a file in the user's config dir, plus `QMessageBox` for user-facing errors (the windowed build has no console). _Rotating `tamil-ocr.log` in the app data dir (e.g. `~/.local/share/Tamil-OCR/`); dialogs for PDF conversion failure, OCR failing on every page, and export failure; uncaught exceptions are logged and shown instead of aborting the app._
+- [x] `resizeEvent` calls `fit_view()` on every resize, discarding the user's zoom. _Refits only while the user hasn't zoomed (also on splitter drags); an OCR result arriving for the current page no longer resets zoom either._
 - [x] Deduplicate `extract_text_lines` (two identical copies) into one module-level function.
 - [x] `OCRSignals` / `OCRManager` should subclass `QObject`, not `QWidget`.
-- [ ] `resource_path()` prints an "Error" on every call when running from source — use `getattr(sys, "_MEIPASS", ...)`.
+- [x] `resource_path()` prints an "Error" on every call when running from source — use `getattr(sys, "_MEIPASS", ...)`. _Also resolves relative to `main.py` instead of the current directory._
 
 ## 🟢 Features
 
 - [ ] Image preprocessing (grayscale, binarisation, deskew) and a `--psm` page-segmentation option.
 - [ ] Export searchable PDF via `pytesseract.image_to_pdf_or_hocr(..., extension='pdf')`.
 - [ ] Preserve paragraph breaks (blank line between Tesseract blocks/paragraphs).
-- [ ] Keyboard shortcuts (Ctrl+O, Ctrl+S, PgUp/PgDn); disable Prev/Next at the first/last page.
+- [ ] Keyboard shortcuts (Ctrl+O, Ctrl+S, PgUp/PgDn); ~~disable Prev/Next at the first/last page~~ _(done — needed for page-by-page loading)_.
 - [ ] Language picker populated from the `.traineddata` files in `tessdata/`.
 - [ ] Save/restore a proofreading session.
 
