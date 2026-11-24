@@ -380,7 +380,9 @@ class PDFConversionWorker(QThread):
             try:
                 images = convert_from_path(
                     self.pdf_path, dpi=dpi, first_page=page_number, last_page=page_number,
-                    poppler_path=POPPLER_PATH)
+                    # Render what PDF viewers show (the crop box), not the whole media box:
+                    # scanned books often place the scan on a larger sheet and crop to it
+                    use_cropbox=True, poppler_path=POPPLER_PATH)
                 if not images:
                     raise RuntimeError(f"poppler returned no image for page {page_number}")
                 if dpi != PDF_DPI_STEPS[0]:

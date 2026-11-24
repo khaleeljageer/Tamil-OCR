@@ -84,3 +84,24 @@ def test_broken_pdf_reports_error(qapp, tmp_path):
     wait_until(qapp, lambda: errors, timeout=30)
     worker.wait()
     assert errors == [0]
+
+
+@pytest.mark.poppler
+def test_page_is_rendered_at_its_crop_box(tmp_path):
+    """Like many scanned books: a 612x1008 pt sheet cropped to the 324x522 pt scan in its middle."""
+    import zlib
+    from searchable_pdf import _Writer
+    pdf = tmp_path / "cropped.pdf"
+    with open(pdf, "wb") as f:
+        w = _Writer(f)
+        catalog, pages = w.reserve(), w.reserve()
+        # Grey fill only inside the crop box; the rest of the sheet stays white
+        content = w.add("<< /Filter /FlateDecode >>", zlib.compress(b"0.5 g 144 243 324 522 re f"))
+        page = w.add(f"<< /Type /Page /Parent {pages} 0 R /MediaBox [0 0 612 1008] "
+                     f"/CropBox [144 243 468 765] /Contents {content} 0 R >>")
+        w.obj(pages, f"<< /Type /Pages /Kids [{page} 0 R] /Count 1 >>")
+        w.obj(catalog, f"<< /Type /Catalog /Pages {pages} 0 R >>")
+        w.finish(catalog, w.add("<< >>"))
+    image = main.PDFConversionWorker(str(pdf), str(tmp_path)).render_page(1)
+    assert image.size == (1350, 2175)  # 324 x 522 pt at 300 DPI
+    assert image.convert("L").getextrema()[1] < 200  # all grey: no white margin from the sheet
