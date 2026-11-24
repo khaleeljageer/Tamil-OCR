@@ -170,9 +170,16 @@ def compact_ocr_data(data):
 def write_session_file(session_path, session):
     """Write atomically so a crash mid-save never leaves a truncated session."""
     tmp_path = session_path + ".tmp"
-    with open(tmp_path, 'w', encoding='utf-8') as f:
-        json.dump(session, f, ensure_ascii=False, separators=(',', ':'))
-    os.replace(tmp_path, session_path)
+    try:
+        with open(tmp_path, 'w', encoding='utf-8') as f:
+            json.dump(session, f, ensure_ascii=False, separators=(',', ':'))
+        os.replace(tmp_path, session_path)
+    except BaseException:
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+        raise
 
 
 def read_session_file(session_path):

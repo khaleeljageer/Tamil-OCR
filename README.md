@@ -111,6 +111,17 @@ The language picker lists every model in the `tessdata/` folder. To add a langua
     python main.py
     ```
 
+## Running the tests
+
+The tests use [pytest](https://pytest.org/) and run headless (no window appears):
+
+```bash
+pip install -r requirements-dev.txt
+pytest
+```
+
+Tests that need Poppler (to render PDFs) or the bundled Tesseract (to run real OCR) are skipped automatically when those tools are not available; run `pytest -m "not tesseract"` to skip the slower end-to-end OCR tests.
+
 ## Building an executable
 
 This project uses [PyInstaller](https://pyinstaller.org/) to create a single-file executable. Install it in your virtual environment first:
