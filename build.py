@@ -4,7 +4,7 @@ Usage:  python build.py [--name NAME]
 
 Bundles the Tamil font, every model in tessdata/ and the Tesseract (and, on
 Windows, Poppler) binaries the app runs. The result is written to dist/.
-Used both for local builds and by the GitHub Actions workflow.
+Run it on each platform you release for (Linux and Windows).
 """
 import argparse
 import glob

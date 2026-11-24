@@ -21,7 +21,7 @@ A desktop application for Optical Character Recognition (OCR) on images and PDF 
 
 ## Download
 
-Download the latest executables for Linux (`Tamil-OCR_linux`) and Windows (`Tamil-OCR_windows.exe`) from the [Releases page](https://github.com/khaleeljageer/Tamil-OCR/releases/latest). Each release also has a `SHA256SUMS.txt` to verify the downloads. On Linux, make the file executable first:
+Download the latest executables for Linux (`Tamil-OCR_linux`) and Windows (`Tamil-OCR_windows.exe`) from the [Releases page](https://github.com/khaleeljageer/Tamil-OCR/releases/latest). On Linux, make the file executable first:
 
 ```bash
 chmod +x Tamil-OCR_linux
@@ -134,31 +134,6 @@ python build.py
 ```
 
 The executable is written to `dist/` (`dist/Tamil-OCR` on Linux, `dist\Tamil-OCR.exe` on Windows). It bundles the Tamil font, every model in `tessdata/` (so languages you have added are included) and Tesseract; on Windows it also bundles Poppler. On Linux the built executable still needs `poppler-utils` installed.
-
-## Continuous integration and releases
-
-The [GitHub Actions workflow](.github/workflows/build.yml) runs on every push to `main` and on every pull request. It:
-
-1.  runs the tests on Linux and Windows;
-2.  builds both executables with `build.py`;
-3.  smoke-tests each executable by opening a PDF and checking that OCR completes.
-
-The executables from any run can be downloaded from the run's **Artifacts** section for 14 days, which is handy for testing a pull request.
-
-### Making a release
-
-A release is published automatically when a version tag is pushed for a commit on `main`:
-
-1.  Set `APP_VERSION` in `main.py` to the new version (for example `1.2.0`) and merge to `main`.
-2.  Tag that commit on `main` and push the tag:
-    ```bash
-    git checkout main && git pull
-    git tag v1.2.0
-    git push origin v1.2.0
-    ```
-3.  The workflow tests and builds, then creates the GitHub Release **v1.2.0** with `Tamil-OCR_linux`, `Tamil-OCR_windows.exe`, `SHA256SUMS.txt` and release notes generated from the merged pull requests.
-
-The release is refused if the tag is not on `main`, does not look like `vX.Y.Z`, or does not match `APP_VERSION`. Alternatively, open **Actions → Build and release → Run workflow** on `main` and enter the tag; the workflow then creates the tag on the latest `main` commit.
 
 ## Troubleshooting
 
