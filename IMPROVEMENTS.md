@@ -39,5 +39,5 @@ Items are checked off as they are fixed.
 - [ ] `.git` is ~523 MB: move release binaries to GitHub Releases; drop poppler headers/man pages and Tesseract training tools from `binary/`.
 - [ ] GitHub Actions workflow to build Linux + Windows executables with PyInstaller and attach them to a Release.
 - [ ] README: fix `your-username` clone URL, add Windows build steps, document `poppler-utils` requirement on Linux.
-- [ ] Pin versions in `requirements.txt`; remove `.idea/` from git; single source for the app version.
+- [ ] Pin versions in `requirements.txt`; ~~remove `.idea/` from git~~ _(done)_; single source for the app version.
 - [ ] Unit tests for text-line extraction and confidence filtering.
