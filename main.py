@@ -15,6 +15,28 @@ import time
 # Child processes inherit this. Respect a value the user has set explicitly.
 os.environ.setdefault('OMP_THREAD_LIMIT', '1')
 
+
+def restore_library_path(env, frozen, system):
+    """Undo PyInstaller's LD_LIBRARY_PATH so child processes use their own libraries.
+
+    A frozen Linux build points LD_LIBRARY_PATH at its extraction folder (sys._MEIPASS),
+    which holds libraries copied from the build machine. Child processes (the Tesseract
+    AppImage, pdftoppm) inherit it and can fail to start when those copies don't match
+    what they were built against. PyInstaller keeps the user's original value in
+    LD_LIBRARY_PATH_ORIG. The running app is unaffected: the loader reads LD_LIBRARY_PATH
+    only at process start.
+    """
+    if not (frozen and system == 'Linux'):
+        return
+    original = env.get('LD_LIBRARY_PATH_ORIG')
+    if original is not None:
+        env['LD_LIBRARY_PATH'] = original
+    else:
+        env.pop('LD_LIBRARY_PATH', None)
+
+
+restore_library_path(os.environ, getattr(sys, 'frozen', False), platform.system())
+
 APP_NAME = "Tamil OCR"
 APP_VERSION = "1.1.0"
 

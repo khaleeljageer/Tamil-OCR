@@ -14,6 +14,7 @@ Items are checked off as they are fixed.
 - [x] **7. If one page fails, the app never reports completion.** Failed pages never counted toward the total. Fix: count failures, report them, and show the error on the failed page.
 - [x] **8. The menu stays active during processing.** `set_ui_enabled()` referenced non-existent `open_btn` / `export_btn`; File → Open/Export and drag-and-drop stayed live during OCR. Fix: disable the actual menu actions and ignore drops while busy.
 - [x] **9. The editor never used the bundled Tamil font.** `marutham.ttf` was loaded after the editor was created, so the editor stayed on `monospace`. Fix: load the font before building the UI. _(Found while adding the features.)_
+- [x] **10. The Linux executable may fail to start Tesseract and Poppler on other machines.** PyInstaller points `LD_LIBRARY_PATH` at its extraction folder, which holds libraries copied from the build machine, and child processes (the Tesseract AppImage, `pdftoppm`) inherited it; this is the likely cause of the "OCR failed on every page" failure in the reverted CI build. Fix: in a frozen Linux build, restore the user's original value (`LD_LIBRARY_PATH_ORIG`) at startup. _Checked in the built executable that Tesseract and `pdftoppm` now get the original value; not yet tested on a different distro._
 
 ## 🟡 Performance & robustness
 
