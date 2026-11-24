@@ -181,7 +181,7 @@ def export(qapp, window, monkeypatch, target):
 @needs_pdftotext
 def test_app_exports_proofread_text(qapp, two_page_doc, monkeypatch, tmp_path):
     window, pdf = two_page_doc
-    window.confidence_spinbox.setValue(50)  # hides the conf-40 'maybe' words
+    window.confidence_picker.setValue(50)  # hides the conf-40 'maybe' words
     window.next_page()
     window.text_edit.setPlainText("Corrected page two")
     out = tmp_path / "searchable"  # no extension: .pdf is added

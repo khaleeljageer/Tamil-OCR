@@ -21,7 +21,7 @@ def edited_doc(qapp, window, make_pdf, monkeypatch, tmp_path):
     window.text_edit.setPlainText("PAGE TWO FIXED")
     window.last_page()
     window.text_edit.setPlainText("PAGE FOUR FIXED")
-    window.confidence_spinbox.setValue(50)  # hides the conf-40 'maybe' words
+    window.confidence_picker.setValue(50)  # hides the conf-40 'maybe' words
     window.lang_picker.set_languages(["eng", "tam_cus"])
     session_path = str(tmp_path / ("doc" + main.SESSION_EXTENSION))
     monkeypatch.setattr(QFileDialog, "getSaveFileName", staticmethod(lambda *a, **k: (session_path, "")))
@@ -64,7 +64,7 @@ def test_restore_skips_ocr_and_restores_state(qapp, edited_doc, image_file, monk
     window, _, path = edited_doc
     open_with_fake_ocr(qapp, window, image_file, 1)  # switch to something else
     window.lang_picker.set_languages(["tam_cus", "eng"])
-    window.confidence_spinbox.setValue(0)
+    window.confidence_picker.setValue(0)
 
     ocr_calls = []
     monkeypatch.setattr(window.ocr_manager, "add_page", lambda *a: ocr_calls.append(a))

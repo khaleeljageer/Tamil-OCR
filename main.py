@@ -78,7 +78,7 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout,
     QLabel, QPushButton, QFileDialog, QTextEdit, QHBoxLayout, QSplitter,
     QGraphicsView, QGraphicsScene, QGraphicsPixmapItem, QGraphicsRectItem,
-    QProgressBar, QStatusBar, QSpinBox, QFrame, QDialog, QToolBar, QSizePolicy,
+    QProgressBar, QStatusBar, QFrame, QDialog, QToolBar, QSizePolicy,
     QMessageBox, QToolButton, QMenu, QComboBox,
     QStyle, QStyleOptionComboBox, QStylePainter
 )
@@ -261,38 +261,65 @@ class StayOpenMenu(QMenu):
         super().mouseReleaseEvent(event)
 
 
-class FontSizePicker(QComboBox):
-    """Drop-down of editor font sizes that never takes keyboard focus, so arrow and
-    Page keys keep going to the editor or page view, and that ignores the mouse wheel
-    so scrolling past it doesn't change the size."""
-    SIZES = (8, 9, 10, 11, 12, 14, 16, 18, 20, 24, 28, 32, 36)
-    sizeChanged = pyqtSignal(int)
+class ValuePicker(QComboBox):
+    """Drop-down of preset numeric values (font size, confidence) that never takes
+    keyboard focus, so arrow and Page keys keep going to the editor or page view, and
+    that ignores the mouse wheel so scrolling past it doesn't change the value.
 
-    def __init__(self, size=12, parent=None):
+    A value that isn't in the list is snapped to the nearest preset, or with
+    snap=False added to the list (e.g. a confidence restored from a session).
+    """
+    valueChanged = pyqtSignal(int)
+
+    def __init__(self, values, value, suffix="", snap=True, parent=None):
         super().__init__(parent)
         self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        for value in self.SIZES:
-            self.addItem(f"{value} pt", value)
-        self.set_font_size(size)
-        self.currentIndexChanged.connect(lambda i: self.sizeChanged.emit(self.itemData(i)))
+        self.suffix = suffix
+        self.snap = snap
+        for v in values:
+            self.addItem(f"{v}{suffix}", v)
+        self.setValue(value)
+        self._last = self.value()
+        self.currentIndexChanged.connect(self._on_index_changed)
 
-    def font_size(self):
+    def values(self):
+        return [self.itemData(i) for i in range(self.count())]
+
+    def value(self):
         return self.currentData()
 
-    def set_font_size(self, size):
-        """Select `size`, or the nearest available size."""
-        nearest = min(self.SIZES, key=lambda value: abs(value - size))
-        self.setCurrentIndex(self.SIZES.index(nearest))
+    def setValue(self, value):
+        values = self.values()
+        if value not in values:
+            if self.snap:
+                value = min(values, key=lambda v: abs(v - value))
+            else:
+                index = sum(1 for v in values if v < value)
+                self.blockSignals(True)  # inserting may shift the current index
+                self.insertItem(index, f"{value}{self.suffix}", value)
+                self.blockSignals(False)
+        self.setCurrentIndex(self.findData(value))
+        self._on_index_changed()
+
+    def _on_index_changed(self, *_):
+        value = self.value()
+        if value != getattr(self, '_last', value):
+            self._last = value
+            self.valueChanged.emit(value)
 
     def wheelEvent(self, event):
         event.ignore()
+
+
+FONT_SIZES = (8, 9, 10, 11, 12, 14, 16, 18, 20, 24, 28, 32, 36)
+CONFIDENCE_STEPS = tuple(range(0, 101, 5))
 
 
 class LanguagePicker(QToolButton):
     """Multi-select of installed Tesseract languages, drawn like a combo box.
 
     Order matters to Tesseract (the first language is the primary one), so the
-    selection keeps the order in which languages were ticked. Like FontSizePicker it
+    selection keeps the order in which languages were ticked. Like ValuePicker it
     never takes keyboard focus.
     """
     languages_changed = pyqtSignal()
@@ -1011,13 +1038,10 @@ class OCRApp(QMainWindow):
         toolbar.addWidget(self.create_spacer())
 
         toolbar.addWidget(QLabel("Confidence:"))
-        self.confidence_spinbox = QSpinBox()
-        self.confidence_spinbox.setRange(0, 100)
-        self.confidence_spinbox.setValue(self.confidence_threshold)
-        self.confidence_spinbox.setSuffix("%")
-        self.confidence_spinbox.setToolTip("Minimum confidence level for OCR text recognition (0-100%)")
-        self.confidence_spinbox.valueChanged.connect(self.on_confidence_changed)
-        toolbar.addWidget(self.confidence_spinbox)
+        self.confidence_picker = ValuePicker(CONFIDENCE_STEPS, self.confidence_threshold, "%", snap=False)
+        self.confidence_picker.setToolTip("Hide words recognised with less confidence than this (0-100%)")
+        self.confidence_picker.valueChanged.connect(self.on_confidence_changed)
+        toolbar.addWidget(self.confidence_picker)
 
         # Add spacing around separator
         toolbar.addWidget(self.create_spacer())
@@ -1034,9 +1058,9 @@ class OCRApp(QMainWindow):
         toolbar.addWidget(self.create_spacer())
 
         toolbar.addWidget(QLabel("Font Size:"))
-        self.font_size_picker = FontSizePicker(12)
+        self.font_size_picker = ValuePicker(FONT_SIZES, 12, " pt")
         self.font_size_picker.setToolTip("Font size of the text editor")
-        self.font_size_picker.sizeChanged.connect(self.on_font_size_changed)
+        self.font_size_picker.valueChanged.connect(self.on_font_size_changed)
         toolbar.addWidget(self.font_size_picker)
 
         # Spacer to push navigation to the right
@@ -1089,7 +1113,7 @@ class OCRApp(QMainWindow):
         self.text_edit.textChanged.connect(self.on_text_edited)
         font = self.text_edit.font()
         font.setFamily(self.custom_font_family)
-        font.setPointSize(self.font_size_picker.font_size())
+        font.setPointSize(self.font_size_picker.value())
         self.text_edit.setFont(font)
         text_layout.addWidget(self.text_edit)
         content_splitter.addWidget(text_widget)
@@ -1583,7 +1607,7 @@ class OCRApp(QMainWindow):
         can_reset = enabled and self.is_page_modified(self.current_page_index)
         self.reset_text_btn.setEnabled(can_reset)
         self.reset_action.setEnabled(can_reset)
-        self.confidence_spinbox.setEnabled(enabled)
+        self.confidence_picker.setEnabled(enabled)
         self.lang_picker.setEnabled(enabled)
 
     # --- Page display ---------------------------------------------------------
@@ -1874,7 +1898,7 @@ class OCRApp(QMainWindow):
             logger.warning("Session languages not installed: %s", missing)
         threshold = session.get('confidence_threshold', 0)
         if isinstance(threshold, int) and 0 <= threshold <= 100:
-            self.confidence_spinbox.setValue(threshold)
+            self.confidence_picker.setValue(threshold)
 
         logger.info("Loading session %s (document %s)", session_path, source)
         self.process_file(source, session=session)

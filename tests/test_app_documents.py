@@ -92,10 +92,10 @@ def test_confidence_refilters_all_pages_but_keeps_edits(three_pages):
     w = three_pages
     assert "maybe" in w.ocr_text[1]
     w.text_edit.setPlainText("EDITED")
-    w.confidence_spinbox.setValue(50)
+    w.confidence_picker.setValue(50)
     assert all("maybe" not in w.ocr_text[i] for i in range(3))
     assert w.text_edit.toPlainText() == "EDITED"
-    w.confidence_spinbox.setValue(100)
+    w.confidence_picker.setValue(100)
     assert w.ocr_text[2] == ""
     assert w.page_text(0) == "EDITED"
 
@@ -103,7 +103,7 @@ def test_confidence_refilters_all_pages_but_keeps_edits(three_pages):
 def test_highlight_boxes_follow_confidence(three_pages):
     w = three_pages
     assert len(w.highlight_items) == 3
-    w.confidence_spinbox.setValue(50)
+    w.confidence_picker.setValue(50)
     assert len(w.highlight_items) == 2
     w.toggle_highlights_action.trigger()
     assert not any(item.isVisible() for item in w.highlight_items)
@@ -149,7 +149,7 @@ def test_controls_disabled_while_busy(qapp, window, make_pdf, no_real_ocr):
                        window.rerun_action):
             assert not action.isEnabled()
         assert not window.lang_picker.isEnabled()
-        assert not window.confidence_spinbox.isEnabled()
+        assert not window.confidence_picker.isEnabled()
     finally:
         window.stop_workers()
         window.set_ui_enabled(True)

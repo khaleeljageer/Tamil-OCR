@@ -29,41 +29,65 @@ def test_editor_uses_bundled_tamil_font(window):
     """Bug 9: the font was loaded after the editor was created."""
     assert window.custom_font_family != "monospace"
     assert window.text_edit.font().family() == window.custom_font_family
-    window.font_size_picker.set_font_size(20)
+    window.font_size_picker.setValue(20)
     assert window.text_edit.font().family() == window.custom_font_family
     assert window.text_edit.font().pointSize() == 20
 
 
-def test_font_size_picker_never_takes_focus(qapp, window):
-    """Clicking the font size control must not steal the keyboard from the editor."""
+PICKERS = ("font_size_picker", "confidence_picker", "lang_picker")
+
+
+@pytest.mark.parametrize("name", PICKERS)
+def test_toolbar_pickers_never_take_focus(qapp, window, name):
+    """Clicking a toolbar control must not steal the keyboard from the editor."""
     window.text_edit.setFocus()
     qapp.processEvents()
-    picker = window.font_size_picker
+    picker = getattr(window, name)
     assert picker.focusPolicy() == Qt.FocusPolicy.NoFocus
     QTest.mouseClick(picker, Qt.MouseButton.LeftButton)
     qapp.processEvents()
-    picker.hidePopup()
-    picker.setCurrentIndex(picker.findData(16))  # as choosing from the list does
+    (picker.hidePopup if hasattr(picker, "hidePopup") else picker.menu_.hide)()
     qapp.processEvents()
-    assert window.text_edit.font().pointSize() == 16
     assert QApplication.focusWidget() is window.text_edit
 
 
-def test_font_size_picker_ignores_mouse_wheel(window):
-    picker = window.font_size_picker
-    before = picker.font_size()
+def test_choosing_from_the_list_applies_the_value(qapp, window):
+    window.font_size_picker.setCurrentIndex(window.font_size_picker.findData(16))  # as a click does
+    window.confidence_picker.setCurrentIndex(window.confidence_picker.findData(60))
+    assert window.text_edit.font().pointSize() == 16
+    assert window.confidence_threshold == 60
+
+
+@pytest.mark.parametrize("name", ("font_size_picker", "confidence_picker"))
+def test_pickers_ignore_mouse_wheel(window, name):
+    picker = getattr(window, name)
+    before = picker.value()
     wheel = QWheelEvent(QPointF(5, 5), QPointF(5, 5), QPoint(0, 0), QPoint(0, -120),
                         Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier,
                         Qt.ScrollPhase.NoScrollPhase, False)
     QApplication.sendEvent(picker, wheel)
-    assert picker.font_size() == before
+    assert picker.value() == before
 
 
 def test_font_size_picker_snaps_to_nearest_size(window):
-    window.font_size_picker.set_font_size(13)
-    assert window.font_size_picker.font_size() == 12
-    window.font_size_picker.set_font_size(100)
-    assert window.font_size_picker.font_size() == 36
+    window.font_size_picker.setValue(13)
+    assert window.font_size_picker.value() == 12
+    window.font_size_picker.setValue(100)
+    assert window.font_size_picker.value() == 36
+
+
+def test_confidence_picker_offers_steps_of_five_and_keeps_other_values(window):
+    picker = window.confidence_picker
+    assert picker.values() == list(range(0, 101, 5))
+    assert picker.currentText() == "0%"
+    seen = []
+    picker.valueChanged.connect(seen.append)
+    picker.setValue(37)  # e.g. restored from an older session: kept exactly, not rounded
+    assert picker.value() == 37 and picker.currentText() == "37%"
+    assert picker.values()[7:9] == [35, 37]
+    picker.setValue(37)
+    assert seen == [37]  # no repeated signal when nothing changed
+    assert window.confidence_threshold == 37
 
 
 def test_about_dialog_shows_app_version(qapp):
