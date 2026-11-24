@@ -14,9 +14,17 @@ def fake_tessdata(tmp_path, monkeypatch):
     return _make
 
 
-def test_available_languages_known_first_osd_excluded(fake_tessdata):
-    fake_tessdata("hin", "eng", "osd", "tam_cus", "mal")
-    assert main.available_languages() == ["tam_cus", "eng", "hin", "mal"]
+def test_available_languages_tamil_then_english_osd_excluded(fake_tessdata):
+    fake_tessdata("hin", "eng", "osd", "tamhyb", "tam_cus", "mal", "tam")
+    assert main.available_languages() == ["tam_cus", "tam", "tamhyb", "eng", "hin", "mal"]
+
+
+@pytest.mark.parametrize("code, name", [
+    ("tam_cus", "Tamil"), ("tamhyb", "Tamil"), ("tam", "Tamil"), ("eng", "English"),
+    ("hin", "Hindi"), ("xyz", "xyz"),
+])
+def test_language_name(code, name):
+    assert main.language_name(code) == name
 
 
 def test_available_languages_missing_dir(monkeypatch, tmp_path):
@@ -36,7 +44,26 @@ def picker(qapp, fake_tessdata):
 
 def test_default_selection(picker):
     assert picker.lang_string() == "tam_cus+eng"
-    assert picker.text() == "tam_cus+eng"
+    assert picker.text() == "Tamil+English"
+
+
+def test_menu_lists_name_and_model_code(qapp, fake_tessdata):
+    fake_tessdata("tam_cus", "tamhyb", "eng")
+    labels = [a.text() for a in main.LanguagePicker().menu_.actions()]
+    assert labels == ["Tamil[tam_cus]", "Tamil[tamhyb]", "English[eng]"]
+
+
+def test_display_shows_each_language_once_in_order(qapp, fake_tessdata):
+    fake_tessdata("tam_cus", "tamhyb", "eng")
+    picker = main.LanguagePicker()
+    picker.set_languages(["eng", "tam_cus", "tamhyb"])
+    assert picker.text() == "English+Tamil"
+    assert picker.lang_string() == "eng+tam_cus+tamhyb"  # what Tesseract gets
+    assert "Tamil[tamhyb]" in picker.toolTip()
+
+
+def test_picker_never_takes_focus(picker):
+    assert picker.focusPolicy() == main.Qt.FocusPolicy.NoFocus
 
 
 def test_falls_back_to_first_model_when_defaults_missing(qapp, fake_tessdata):

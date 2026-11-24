@@ -72,14 +72,15 @@ def setup_logging():
     return log_file
 
 
-from PyQt6.QtCore import Qt, QRectF, QThread, pyqtSignal, QTimer, QThreadPool, QRunnable, QUrl, QObject
+from PyQt6.QtCore import QSize, Qt, QRectF, QThread, pyqtSignal, QTimer, QThreadPool, QRunnable, QUrl, QObject
 from PyQt6.QtGui import QPixmap, QPen, QColor, QBrush, QPainter, QFontDatabase, QDesktopServices, QAction, QKeySequence
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout,
     QLabel, QPushButton, QFileDialog, QTextEdit, QHBoxLayout, QSplitter,
     QGraphicsView, QGraphicsScene, QGraphicsPixmapItem, QGraphicsRectItem,
     QProgressBar, QStatusBar, QSpinBox, QFrame, QDialog, QToolBar, QSizePolicy,
-    QMessageBox, QToolButton, QMenu, QComboBox
+    QMessageBox, QToolButton, QMenu, QComboBox,
+    QStyle, QStyleOptionComboBox, QStylePainter
 )
 from pdf2image import convert_from_path, pdfinfo_from_path
 from PIL import Image
@@ -157,13 +158,20 @@ def extract_text_lines(data, confidence_threshold):
     return text_lines
 
 
-# Friendly names for language models; anything else is shown by its code
+# Language names by Tesseract's ISO 639-2 code. A model named after a code plus a
+# suffix (tam_cus, tamhyb) gets that language's name; anything else shows its code.
 LANGUAGE_NAMES = {
-    'tam_cus': 'Tamil (custom model)',
-    'tam': 'Tamil',
-    'eng': 'English',
+    'tam': 'Tamil', 'eng': 'English', 'hin': 'Hindi', 'mal': 'Malayalam', 'tel': 'Telugu',
+    'kan': 'Kannada', 'san': 'Sanskrit', 'ben': 'Bengali', 'mar': 'Marathi', 'guj': 'Gujarati',
+    'pan': 'Punjabi', 'ori': 'Odia', 'sin': 'Sinhala', 'urd': 'Urdu', 'ara': 'Arabic',
+    'fra': 'French', 'deu': 'German', 'spa': 'Spanish',
 }
 DEFAULT_LANGUAGES = ['tam_cus', 'eng']
+
+
+def language_name(code):
+    """Display name of a language model: 'tam_cus' and 'tamhyb' are both 'Tamil'."""
+    return LANGUAGE_NAMES.get(code) or LANGUAGE_NAMES.get(code[:3]) or code
 
 
 def available_languages():
@@ -176,9 +184,12 @@ def available_languages():
         return []
     # 'osd' is orientation/script detection, not a recognition language
     codes = [c for c in codes if c != 'osd']
-    # Known languages first, in a stable order
-    known = [c for c in LANGUAGE_NAMES if c in codes]
-    return known + [c for c in codes if c not in known]
+    # Tamil models first, then English, then the rest; default models lead their language
+    def order(code):
+        name = language_name(code)
+        group = {'Tamil': 0, 'English': 1}.get(name, 2)
+        return group, code not in DEFAULT_LANGUAGES, code
+    return sorted(codes, key=order)
 
 
 # --- Proofreading sessions ------------------------------------------------------
@@ -278,25 +289,29 @@ class FontSizePicker(QComboBox):
 
 
 class LanguagePicker(QToolButton):
-    """Multi-select of installed Tesseract languages.
+    """Multi-select of installed Tesseract languages, drawn like a combo box.
 
     Order matters to Tesseract (the first language is the primary one), so the
-    selection keeps the order in which languages were ticked.
+    selection keeps the order in which languages were ticked. Like FontSizePicker it
+    never takes keyboard focus.
     """
     languages_changed = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.setAttribute(Qt.WidgetAttribute.WA_Hover)
+        self._combo_height = QComboBox().sizeHint().height()
         self.menu_ = StayOpenMenu(self)
+        self.menu_.aboutToShow.connect(lambda: self.menu_.setMinimumWidth(self.width()))
         self.setMenu(self.menu_)
         self.actions_by_code = {}
         self.selected = []
 
         codes = available_languages()
         for code in codes:
-            label = LANGUAGE_NAMES.get(code, code)
-            action = QAction(f"{label}  [{code}]", self, checkable=True)
+            action = QAction(f"{language_name(code)}[{code}]", self, checkable=True)
             action.toggled.connect(lambda checked, c=code: self._on_toggled(c, checked))
             self.menu_.addAction(action)
             self.actions_by_code[code] = action
@@ -321,11 +336,43 @@ class LanguagePicker(QToolButton):
         self._update_label()
         self.languages_changed.emit()
 
+    def display_text(self):
+        """Selected language names, without repeats: 'Tamil+English'."""
+        names = list(dict.fromkeys(language_name(c) for c in self.selected))
+        return '+'.join(names) or "(none)"
+
     def _update_label(self):
-        self.setText(self.lang_string() or "(none)")
-        names = [LANGUAGE_NAMES.get(c, c) for c in self.selected]
-        self.setToolTip("OCR languages (first is primary): " + ", ".join(names) +
+        self.setText(self.display_text())
+        self.updateGeometry()
+        models = ", ".join(f"{language_name(c)}[{c}]" for c in self.selected)
+        self.setToolTip(f"OCR languages (first is primary): {models}"
                         "\nClick to choose from the models installed in tessdata/")
+
+    def _combo_option(self):
+        option = QStyleOptionComboBox()
+        option.initFrom(self)
+        option.editable = False
+        option.frame = True
+        option.currentText = self.text()
+        if self.menu_.isVisible() or self.isDown():
+            option.state |= QStyle.StateFlag.State_On | QStyle.StateFlag.State_Sunken
+        return option
+
+    def sizeHint(self):
+        metrics = self.fontMetrics()
+        text = QSize(metrics.horizontalAdvance(self.text()), metrics.height())
+        size = self.style().sizeFromContents(QStyle.ContentsType.CT_ComboBox, self._combo_option(), text, self)
+        # Same height as a real combo box (e.g. the font size picker next to it)
+        return QSize(size.width(), max(size.height(), self._combo_height))
+
+    def minimumSizeHint(self):
+        return self.sizeHint()
+
+    def paintEvent(self, event):
+        painter = QStylePainter(self)
+        option = self._combo_option()
+        painter.drawComplexControl(QStyle.ComplexControl.CC_ComboBox, option)
+        painter.drawControl(QStyle.ControlElement.CE_ComboBoxLabel, option)
 
     def set_languages(self, codes):
         """Select exactly these languages, in order; unknown codes are ignored.
