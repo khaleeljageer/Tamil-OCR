@@ -2,8 +2,9 @@
 
 Usage:  python build.py [--name NAME]
 
-Bundles the Tamil font, every model in tessdata/ and the Tesseract (and, on
-Windows, Poppler) binaries the app runs. The result is written to dist/.
+Bundles the fonts (the Tamil font and the searchable-PDF text font), every
+model in tessdata/ and the Tesseract (and, on Windows, Poppler) binaries the app
+runs. The result is written to dist/.
 Run it on each platform you release for (Linux and Windows).
 """
 import argparse
@@ -37,6 +38,7 @@ def main():
 
     data, binaries = [], []
     bundle(data, rel("font", "marutham.ttf"), "font")
+    bundle(data, rel("font", "pdf.ttf"), "font")  # invisible text for searchable PDF export
     bundle(data, rel("tessdata", "*.traineddata"), "tessdata")
 
     system = platform.system()

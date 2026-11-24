@@ -144,7 +144,8 @@ def test_controls_disabled_while_busy(qapp, window, make_pdf, no_real_ocr):
     window.process_file(make_pdf(3))  # OCR never finishes (no_real_ocr): stays busy
     try:
         assert window.busy
-        for action in (window.open_action, window.export_action, window.save_session_action,
+        for action in (window.open_action, window.export_action, window.export_pdf_action,
+                       window.save_session_action,
                        window.rerun_action):
             assert not action.isEnabled()
         assert not window.lang_picker.isEnabled()

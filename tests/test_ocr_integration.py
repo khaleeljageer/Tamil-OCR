@@ -60,3 +60,21 @@ def test_rerun_completes_once_with_all_pages(qapp, window, make_pdf):
     settle(qapp, 1)
     assert completions == [0]
     assert len(window.ocr_text) == 3
+
+
+@pytest.mark.poppler
+def test_real_ocr_exports_searchable_pdf(qapp, window, tmp_path, monkeypatch):
+    """OCR a scan, then export: the PDF's text layer is the OCR text, word for word."""
+    import subprocess
+    from PyQt6.QtWidgets import QFileDialog
+    path = tmp_path / "scan.png"
+    page_image(["Searchable export works", "with several words per line"], size=(1400, 600)).save(path)
+    window.process_file(str(path))
+    wait_until(qapp, lambda: not window.busy, timeout=120)
+    out = tmp_path / "scan_ocr.pdf"
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", staticmethod(lambda *a, **k: (str(out), "")))
+    window.export_searchable_pdf()
+    wait_until(qapp, lambda: window.export_worker is None, timeout=60)
+    extracted = subprocess.run(["pdftotext", str(out), "-"], capture_output=True, text=True, check=True).stdout
+    assert extracted.split() == window.ocr_text[0].split()
+    assert "Searchable" in extracted

@@ -84,6 +84,8 @@ from PyQt6.QtWidgets import (
 from pdf2image import convert_from_path, pdfinfo_from_path
 from PIL import Image
 
+from searchable_pdf import PageSpec, Word, write_searchable_pdf
+
 # Raise Pillow's decompression-bomb limit (default ~89 MP) so large scans and 300-DPI
 # renders of big pages load, while still refusing absurd sizes. Pillow raises
 # DecompressionBombError above 2x this value; the PDF worker then retries at lower DPI.
@@ -105,17 +107,24 @@ else:
     POPPLER_PATH = None
 
 
-def extract_text_lines(data, confidence_threshold):
+def ocr_line_words(data, confidence_threshold):
     """Group Tesseract words into lines, keeping only words above the confidence threshold.
 
-    A blank line is inserted between paragraphs (a change of Tesseract block or
-    paragraph), so the exported text keeps the page's paragraph structure.
+    Returns a list of (new_paragraph, words) in reading order, where words are
+    searchable_pdf.Word objects (text and pixel box) and new_paragraph is true when the
+    line starts a new Tesseract block or paragraph.
     """
-    text_lines = []
-    current_line = []
+    lines = []
     last_block_num = last_par_num = last_line_num = None
 
     n_boxes = len(data.get('text', []))
+
+    def field(name, i):
+        try:
+            return int(data.get(name, [0] * n_boxes)[i])
+        except (TypeError, ValueError, IndexError):
+            return 0
+
     for i in range(n_boxes):
         try:
             conf = float(data['conf'][i])
@@ -124,24 +133,27 @@ def extract_text_lines(data, confidence_threshold):
         word = (data['text'][i] or '').strip()
 
         if conf > confidence_threshold and word:
-            block_num = int(data.get('block_num', [0] * n_boxes)[i])
-            par_num = int(data.get('par_num', [0] * n_boxes)[i])
-            line_num = int(data.get('line_num', [0] * n_boxes)[i])
-
+            block_num, par_num, line_num = field('block_num', i), field('par_num', i), field('line_num', i)
             new_paragraph = (block_num, par_num) != (last_block_num, last_par_num)
             if new_paragraph or line_num != last_line_num:
-                if current_line:
-                    text_lines.append(' '.join(current_line))
-                    current_line = []
-                if new_paragraph and text_lines:
-                    text_lines.append('')
+                lines.append((new_paragraph, []))
                 last_block_num, last_par_num, last_line_num = block_num, par_num, line_num
+            lines[-1][1].append(Word(word, field('left', i), field('top', i),
+                                     field('width', i), field('height', i)))
+    return lines
 
-            current_line.append(word)
 
-    if current_line:
-        text_lines.append(' '.join(current_line))
+def extract_text_lines(data, confidence_threshold):
+    """Text lines of a page, keeping only words above the confidence threshold.
 
+    A blank line is inserted between paragraphs (a change of Tesseract block or
+    paragraph), so the exported text keeps the page's paragraph structure.
+    """
+    text_lines = []
+    for new_paragraph, words in ocr_line_words(data, confidence_threshold):
+        if new_paragraph and text_lines:
+            text_lines.append('')
+        text_lines.append(' '.join(w.text for w in words))
     return text_lines
 
 
@@ -343,9 +355,13 @@ class PDFConversionWorker(QThread):
                 if self.should_stop:
                     return
 
+                dpi = page.info.get('dpi', (PDF_DPI_STEPS[0],) * 2)[0]
+                original_width = page.width
                 page = self.limit_size(page)
+                dpi *= page.width / original_width
                 tmp_path = os.path.join(self.output_dir, f"page_{page_number:04d}.png")
-                page.save(tmp_path, 'PNG')
+                # Record the resolution so a searchable PDF export keeps the original page size
+                page.save(tmp_path, 'PNG', dpi=(dpi, dpi))
                 page.close()
 
                 self.page_converted.emit(page_number - 1, tmp_path)
@@ -369,6 +385,7 @@ class PDFConversionWorker(QThread):
                     raise RuntimeError(f"poppler returned no image for page {page_number}")
                 if dpi != PDF_DPI_STEPS[0]:
                     logger.info("Page %d rendered at reduced %d DPI", page_number, dpi)
+                images[0].info['dpi'] = (dpi, dpi)
                 return images[0]
             except Image.DecompressionBombError as error:
                 logger.warning("Page %d too large at %d DPI, retrying lower", page_number, dpi)
@@ -387,6 +404,35 @@ class PDFConversionWorker(QThread):
                               Image.Resampling.LANCZOS)
         page.close()
         return resized
+
+    def stop(self):
+        self.should_stop = True
+
+
+class PDFExportWorker(QThread):
+    """Write a searchable PDF in the background (encoding page images takes a while)."""
+    progress = pyqtSignal(int, int)  # pages done, total
+    export_finished = pyqtSignal(str)  # output path
+    export_failed = pyqtSignal(str)  # error message
+
+    def __init__(self, output_path, pages, title):
+        super().__init__()
+        self.output_path = output_path
+        self.pages = pages
+        self.title = title
+        self.should_stop = False
+
+    def run(self):
+        try:
+            written = write_searchable_pdf(
+                self.output_path, self.pages, resource_path(os.path.join("font", "pdf.ttf")),
+                title=self.title, producer=f"{APP_NAME} {APP_VERSION}",
+                progress=self.progress.emit, should_stop=lambda: self.should_stop)
+            if written:
+                self.export_finished.emit(self.output_path)
+        except Exception as error:
+            logger.exception("Searchable PDF export failed")
+            self.export_failed.emit(str(error))
 
     def stop(self):
         self.should_stop = True
@@ -750,6 +796,7 @@ class OCRApp(QMainWindow):
         # Workers
         self.pdf_worker = None
         self.pdf_converting = False
+        self.export_worker = None
         self.ocr_manager = OCRManager()
 
         # Progress / page bookkeeping
@@ -832,6 +879,8 @@ class OCRApp(QMainWindow):
         self.save_session_as_action = make_action("Save Session &As…", self.save_session_as,
                                                   ["Ctrl+Shift+S"], file_menu)
         self.export_action = make_action("&Export Text…", self.export_text, ["Ctrl+E"], file_menu)
+        self.export_pdf_action = make_action("Export Searchable &PDF…", self.export_searchable_pdf,
+                                             ["Ctrl+Shift+E"], file_menu)
         file_menu.addSeparator()
         make_action("E&xit", self.close, ["Ctrl+Q"], file_menu)
 
@@ -1122,6 +1171,19 @@ class OCRApp(QMainWindow):
                 self.pdf_worker.wait(3000)
             self.pdf_worker = None
         self.pdf_converting = False
+
+        if self.export_worker is not None:
+            # Leaving mid-export: abandon it (no partial file is left) before the page images go
+            for sig in (self.export_worker.progress, self.export_worker.export_finished,
+                        self.export_worker.export_failed):
+                try:
+                    sig.disconnect()
+                except TypeError:
+                    pass
+            if self.export_worker.isRunning():
+                self.export_worker.stop()
+                self.export_worker.wait()
+            self.export_worker = None
 
         self.ocr_manager.stop_all()
 
@@ -1440,6 +1502,7 @@ class OCRApp(QMainWindow):
         has_pages = bool(self.temp_pages)
         self.open_action.setEnabled(enabled)
         self.export_action.setEnabled(enabled and has_pages)
+        self.export_pdf_action.setEnabled(enabled and has_pages)
         self.save_session_action.setEnabled(enabled and has_pages)
         self.save_session_as_action.setEnabled(enabled and has_pages)
         self.rerun_ocr_btn.setEnabled(enabled and has_pages)
@@ -1777,6 +1840,71 @@ class OCRApp(QMainWindow):
                     logger.exception("Error exporting text")
                     self.status_bar.showMessage(f"Error exporting text: {e}")
                     QMessageBox.critical(self, "Export failed", f"Could not save {file_path}:\n\n{e}")
+
+
+    def searchable_pdf_pages(self):
+        """Page images with their OCR lines (at the current threshold) and final text."""
+        pages = []
+        for i, image_path in enumerate(self.temp_pages):
+            lines = []
+            if i in self.ocr_data_cache:
+                lines = [words for _, words in ocr_line_words(self.ocr_data_cache[i], self.confidence_threshold)]
+            pages.append(PageSpec(image_path, lines, self.page_text(i)))
+        return pages
+
+    def export_searchable_pdf(self):
+        """Save the page images with an invisible text layer (the proofread text)."""
+        if self.busy or not self.temp_pages:
+            return
+        base = os.path.splitext(self.source_path)[0] if self.source_path else "output"
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, "Export Searchable PDF", base + "_ocr.pdf", "PDF Files (*.pdf)")
+        if not file_path:
+            return
+        if not file_path.lower().endswith('.pdf'):
+            file_path += '.pdf'
+        if self.source_path and os.path.exists(file_path) and os.path.samefile(file_path, self.source_path):
+            QMessageBox.warning(self, "Export Searchable PDF",
+                                "Choose a different file name: the export can't replace the open document.")
+            return
+
+        missing = [i + 1 for i in range(len(self.temp_pages))
+                   if i not in self.ocr_data_cache and not self.page_text(i).strip()]
+        title = os.path.splitext(os.path.basename(self.source_path or file_path))[0]
+        self.export_worker = PDFExportWorker(file_path, self.searchable_pdf_pages(), title)
+        self.export_worker.progress.connect(self.on_export_progress)
+        self.export_worker.export_finished.connect(lambda path: self.on_export_finished(path, missing))
+        self.export_worker.export_failed.connect(lambda message: self.on_export_failed(file_path, message))
+        self.set_ui_enabled(False)
+        self.progress_bar.setValue(0)
+        self.progress_bar.setVisible(True)
+        self.status_bar.showMessage("Exporting searchable PDF...")
+        logger.info("Exporting searchable PDF to %s", file_path)
+        self.export_worker.start()
+
+    def on_export_progress(self, done, total):
+        self.progress_bar.setValue(int(done * 100 / total) if total else 100)
+        self.status_bar.showMessage(f"Exporting searchable PDF... page {done} of {total}")
+
+    def end_export(self):
+        if self.export_worker is not None:
+            self.export_worker.wait()
+            self.export_worker = None
+        self.progress_bar.setVisible(False)
+        self.set_ui_enabled(True)
+
+    def on_export_finished(self, file_path, pages_without_text):
+        self.end_export()
+        message = f"Searchable PDF exported to {file_path}"
+        if pages_without_text:
+            message += f" — no text on page(s) {', '.join(map(str, pages_without_text))}"
+        self.status_bar.showMessage(message)
+        logger.info(message)
+
+    def on_export_failed(self, file_path, message):
+        self.end_export()
+        self.status_bar.showMessage(f"Error exporting PDF: {message}")
+        QMessageBox.critical(self, "Export failed", f"Could not save {file_path}:\n\n{message}")
 
 
 def install_exception_hook(log_file):

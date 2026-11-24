@@ -16,7 +16,7 @@ A desktop application for Optical Character Recognition (OCR) on images and PDF 
     *   Paragraphs are kept, with a blank line between them.
     *   Uses the bundled Tamil font (`marutham.ttf`); the font size is adjustable.
 *   **Sessions:** save your work to a `.tamilocr` file and continue later; see [Sessions](#sessions).
-*   **Export:** save the proofread text of all pages to a single `.txt` file.
+*   **Export:** save the proofread text of all pages to a single `.txt` file, or as a **searchable PDF**; see [Searchable PDF](#searchable-pdf).
 *   **Keyboard shortcuts:** for opening, saving, page navigation and zoom; see [Keyboard shortcuts](#keyboard-shortcuts).
 
 ## Download
@@ -38,7 +38,7 @@ On Linux, reading PDFs also needs `poppler-utils`, and the window needs `libxcb-
 2.  OCR runs automatically. The status bar shows progress; with a PDF you can already read and edit the first pages while later ones are still processing.
 3.  **Proofread** each page in the editor on the right. Use **Prev / Next Page**, or the shortcuts below, to move between pages.
 4.  Adjust **Confidence** to filter out uncertain words, or change the languages and click **Re-Run OCR** (Ctrl+R).
-5.  **Save a session** (Ctrl+S) to keep your work, or **Export Text** (Ctrl+E) to get the final `.txt` file.
+5.  **Save a session** (Ctrl+S) to keep your work, or export the result: **Export Text** (Ctrl+E) for a `.txt` file, **Export Searchable PDF** (Ctrl+Shift+E) for a PDF.
 
 ### Sessions
 
@@ -51,6 +51,14 @@ The document itself is not copied into the session; the session records where it
 
 When you close the app or open another file with unsaved edits, you are asked whether to save them. A `*` in the window title means there are unsaved edits.
 
+### Searchable PDF
+
+**File → Export Searchable PDF** (Ctrl+Shift+E) saves the page images as a PDF with an invisible text layer, so the text can be searched, selected and copied in any PDF viewer while the pages look exactly like the scan.
+
+*   The text layer is the **proofread** text: your edits are included, and words below the confidence threshold are left out, as in the text export. No OCR is run again, so exporting is quick.
+*   Unchanged lines keep the exact position of each word. An edited line covers the area of the line it replaces, so searching finds your corrected text, though its highlight may not line up word for word.
+*   Pages keep the size of the original PDF. Image pages use the image's resolution (300 DPI if it has none).
+
 ### Keyboard shortcuts
 
 | Shortcut | Action |
@@ -59,6 +67,7 @@ When you close the app or open another file with unsaved edits, you are asked wh
 | Ctrl+S | Save session |
 | Ctrl+Shift+S | Save session as… |
 | Ctrl+E | Export text |
+| Ctrl+Shift+E | Export searchable PDF |
 | Ctrl+Q | Quit |
 | Ctrl+R | Re-run OCR on all pages |
 | Ctrl+Shift+R | Reset the current page's text to the OCR result |
@@ -133,7 +142,7 @@ pip install -r requirements-dev.txt
 python build.py
 ```
 
-The executable is written to `dist/` (`dist/Tamil-OCR` on Linux, `dist\Tamil-OCR.exe` on Windows). It bundles the Tamil font, every model in `tessdata/` (so languages you have added are included) and Tesseract; on Windows it also bundles Poppler. On Linux the built executable still needs `poppler-utils` installed.
+The executable is written to `dist/` (`dist/Tamil-OCR` on Linux, `dist\Tamil-OCR.exe` on Windows). It bundles the Tamil font, the searchable-PDF text font (`font/pdf.ttf`), every model in `tessdata/` (so languages you have added are included) and Tesseract; on Windows it also bundles Poppler. On Linux the built executable still needs `poppler-utils` installed.
 
 ## Troubleshooting
 
@@ -149,4 +158,4 @@ The executable is written to `dist/` (`dist/Tamil-OCR` on Linux, `dist\Tamil-OCR
 
 This project is licensed under the [GNU General Public License v3.0](LICENSE).
 
-It uses [Tesseract OCR](https://tesseract-ocr.github.io/) (Apache 2.0), [PyQt6](https://www.riverbankcomputing.com/software/pyqt/) (GPL v3), [pdf2image](https://github.com/Belval/pdf2image) (MIT), [Pillow](https://github.com/python-pillow/Pillow) (MIT-CMU) and [Poppler](https://poppler.freedesktop.org/) (GPL).
+It uses [Tesseract OCR](https://tesseract-ocr.github.io/) (Apache 2.0; also the source of the invisible text font `font/pdf.ttf`), [PyQt6](https://www.riverbankcomputing.com/software/pyqt/) (GPL v3), [pdf2image](https://github.com/Belval/pdf2image) (MIT), [Pillow](https://github.com/python-pillow/Pillow) (MIT-CMU) and [Poppler](https://poppler.freedesktop.org/) (GPL).
