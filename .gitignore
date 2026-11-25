@@ -207,3 +207,6 @@ marimo/_lsp/
 __marimo__/
 .idea/modules.xml
 .idea
+
+# Local working notes
+IMPROVEMENTS.md
